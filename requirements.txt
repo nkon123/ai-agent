@@ -1,0 +1,20 @@
+# 버전은 하한만 지정한다. 폐쇄망에서는 사내 미러에 있는 버전이
+# 제각각이라 상한을 박아 두면 설치 자체가 막힌다.
+
+# LLM / 그래프
+langchain>=1.0
+langgraph>=0.2
+langchain-ollama>=0.2
+
+# 웹 (챗봇 UI)
+flask>=3.0
+
+# HTTP (Ollama 헬스체크). langchain-ollama 의 의존성이지만 명시해 둔다.
+httpx>=0.27
+
+# 테스트
+pytest>=8.0
+
+# Oracle 을 쓰는 에이전트가 있을 때만 필요하다.
+# 없어도 나머지 기능은 동작한다. 필요해지면 주석을 풀 것.
+# oracledb>=2.0
