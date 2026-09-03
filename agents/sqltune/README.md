@@ -1,0 +1,108 @@
+# sqltune (SQL 튜닝 진단)
+
+느린 쿼리를 **오라클 튜닝 기준**으로 진단하고, 실행계획을 보고, 인덱스를
+제안한다. 필요하면 실제로 수행해 시간과 실제 계획까지 비교한다.
+
+```
+안전 검사 → 정적 규칙 → 실행계획(EXPLAIN) → 플랜 규칙
+→ 인덱스 제안 → (선택) 실제 수행 비교 → (선택) LLM 개선안
+```
+
+## 실행
+
+```bash
+python agents/sqltune/agent.py -f slow.sql
+python agents/sqltune/agent.py -q "SELECT * FROM ORD_HDR WHERE ..."
+python agents/sqltune/agent.py -f slow.sql --run     # 실제 수행까지 비교
+python agents/sqltune/agent.py -f slow.sql --json    # 기계용
+```
+
+```
+[진단] 문제 4건
+  - func-on-column     인덱스 컬럼에 함수를 씌우면 인덱스를 타지 못한다
+      근거: WHERE TO_CHAR(REG_DT,'YYYYMMDD')='20260101'
+  - negation           부정 조건은 인덱스로 걸러내지 못한다
+  - select-star        필요한 컬럼만 적으면 커버링 인덱스로 …
+  - literal-value      리터럴만 쓰면 하드파싱이 반복된다
+
+[실행계획]
+ Id Operation                    Object          Rows     Cost
+───────────────────────────────────────────────────────────────
+  0 SELECT STATEMENT                            100000     842
+  1  SORT ORDER BY                              100000     842
+  2   TABLE ACCESS FULL         ORD_HDR         100000     840
+
+[인덱스 제안] 등치 1개 · 범위 1개 · 정렬 1개 순으로 구성했다
+  CREATE INDEX IX_ORD_HDR_STATUS_REG_DT ON ORD_HDR (STATUS, REG_DT, ORD_NO);
+  ※ 실행하지 않았다. 검토 후 직접 수행할 것
+```
+
+## 판정 기준은 문서 한 곳에
+
+`agents/sqltune/tuning_rules.md` 가 기준이다. **규칙 엔진과 LLM 프롬프트가
+같은 문서를 본다.** 기준을 코드에 흩어 놓으면 한쪽만 고쳤을 때 서로 다른
+답이 나온다. 사내 기준이 다르면 `config.SQLTUNE_RULES_FILE` 로 바꾼다.
+
+규칙명(`func-on-column`, `full-scan` …)은 문서와 코드가 같은 이름을 쓴다.
+결과에 규칙명이 찍히므로 "왜 이렇게 판정했나"를 문서에서 바로 찾을 수 있다.
+
+## 안전 (이 에이전트에서 특히 중요하다)
+
+| 규칙 | 이유 |
+|---|---|
+| **SELECT 만 받는다** | DML/DDL/PL-SQL 블록/`FOR UPDATE`/`UTL_`·`DBMS_` 패키지 호출을 거부한다. 튜닝 도구가 데이터를 바꾸면 사고다 |
+| **한 문장만** | 세미콜론 뒤에 내용이 있으면 거부한다 |
+| **인덱스는 제안만** | `CREATE INDEX` 를 만들어 보여줄 뿐 실행하지 않는다 |
+| **실행은 기본 꺼짐** | 실행은 곧 운영 DB 부하다. CLI `--run` 으로 사람이 켤 때만. **MCP 툴은 어떤 설정에서도 실행하지 않는다** |
+| **읽기 상한** | 실행 시 `SQLTUNE_MAX_ROWS`(기본 100)행·`SQLTUNE_TIMEOUT_SEC`(기본 60초) |
+
+안전 검사는 **주석과 문자열을 지운 사본**으로 한다. 원문으로 검사하면
+`SELECT 'DELETE ME' FROM dual` 이 DML 로 오탐되고, 반대로 주석에 가린
+것을 놓친다.
+
+## 실행 비교 (`--run`)
+
+`GATHER_PLAN_STATISTICS` 힌트를 붙여 수행하고 `DBMS_XPLAN.DISPLAY_CURSOR`
+로 **실제** 계획을 받는다. 추정(E-Rows)이 아니라 실제(A-Rows)를 본다.
+
+- **Buffers(논리적 읽기)를 먼저 본다.** 수행 시간은 캐시·부하에 흔들리지만
+  Buffers 는 재현된다
+- `SQLTUNE_RUNS`(기본 2)회 수행하고 **최소값**을 쓴다. 첫 회에는 하드파싱과
+  캐시 적재가 섞인다
+- 상한까지만 읽었으면 "실제 수행 시간은 더 길 수 있다"고 결과에 남긴다
+
+같은 세션에서 실행 → `DISPLAY_CURSOR` 순으로 부른다. 다른 세션에서는 방금
+그 커서를 볼 수 없다.
+
+## 인덱스 제안 규칙
+
+등치(`=`) → 범위(`>`, `BETWEEN`, `LIKE 'x%'`) → `ORDER BY` 순으로 컬럼을
+배치한다(기준 문서 7항). **기존 인덱스의 선두 컬럼이 같으면 제안하지
+않는다** — 중복 인덱스는 조회를 빠르게 하지 않고 DML 만 느리게 한다.
+
+조건을 못 찾으면 억지로 만들지 않고 "확인 필요"로 남긴다. 정규식 기반이라
+완벽하지 않고, 어차피 사람이 검토할 제안이다.
+
+## LLM 역할
+
+기준 문서와 **규칙이 찾은 문제**를 함께 주고 고친 쿼리를 받는다.
+LLM 이 규칙 판정을 뒤집지 않는다 — 근거로 삼을 뿐이다.
+`USE_LLM=false` 면 규칙 진단까지만 하고 끝난다.
+
+## MCP
+
+| 툴 | 등급 | 무엇 |
+|---|---|---|
+| `tune_query(sql)` | combo | 진단 + 인덱스 제안 (**실행 안 함**) |
+| `explain_query(sql)` | step | 실행계획만 |
+
+리소스는 두지 않았다. 다른 에이전트는 키(짧은 문자열)로 상세를 다시 읽지만
+여기서는 입력이 SQL 전문이라 URI 에 담을 수 없다. 전체 결과가 필요하면
+CLI 를 쓴다.
+
+## 아직 없는 것
+
+- **후보 쿼리 자동 생성·비교** — 지금은 원본 하나만 진단한다. 여러 변형을
+  만들어 플랜을 나란히 비교하는 것은 다음 단계다
+- **SQL 파서** — 술어 추출이 정규식이라 서브쿼리·인라인뷰가 섞이면 놓친다
+- **PLAN_TABLE 자동 생성** — 없으면 `?/rdbms/admin/utlxplan.sql` 안내만 한다

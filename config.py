@@ -30,6 +30,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+from pathlib import Path
 from types import ModuleType
 from typing import Any, Dict, Mapping
 
@@ -277,6 +278,28 @@ IMPACT_MAX_STATEMENTS: int = _env_int("IMPACT_MAX_STATEMENTS", 8)
 # 한 번에 조회할 최대 행 수. 로컬 LLM 이 붙은 요청 하나가 수만 행을
 # 끌어오면 챗봇이 통째로 멎는다.
 IFERR_MAX_ROWS: int = _env_int("IFERR_MAX_ROWS", 200)
+
+# --------------------------------------------------------------------------
+# SQL 튜닝 (sqltune 에이전트)
+# --------------------------------------------------------------------------
+# 판정 기준 문서. 규칙 엔진과 LLM 프롬프트가 같은 파일을 본다.
+# 사내 기준이 다르면 다른 경로를 지정한다.
+SQLTUNE_RULES_FILE: str = _env_str(
+    "SQLTUNE_RULES_FILE", str(Path(__file__).parent / "agents/sqltune/tuning_rules.md")
+)
+
+# 쿼리를 '실제로 실행'해 비교할 것인가.
+# 기본은 False — 실행은 곧 운영 DB 부하다. 플랜(EXPLAIN PLAN)만으로도
+# 대부분의 문제는 보인다. CLI 는 --run 으로 그때만 켠다(사람이 판단).
+SQLTUNE_EXECUTE: bool = _env_bool("SQLTUNE_EXECUTE", False)
+
+# 실행 비교 시 한 번에 가져올 최대 행 수와 상한 시간.
+# 튜닝 대상은 대개 느린 쿼리라 상한이 없으면 세션이 오래 잡힌다.
+SQLTUNE_MAX_ROWS: int = _env_int("SQLTUNE_MAX_ROWS", 100)
+SQLTUNE_TIMEOUT_SEC: int = _env_int("SQLTUNE_TIMEOUT_SEC", 60)
+
+# 실행 반복 횟수. 첫 회는 하드파싱·캐시 적재가 섞여 버린다.
+SQLTUNE_RUNS: int = _env_int("SQLTUNE_RUNS", 2)
 
 # --------------------------------------------------------------------------
 # MCP (Model Context Protocol) — 스펙 리비전 2026-07-28

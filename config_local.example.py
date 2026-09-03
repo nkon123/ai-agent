@@ -139,3 +139,18 @@ IFERR_MASTER_FIELDS = {
 #     "detail": "SELECT ... FROM {schema}IF_LOG WHERE IFID = :if_key",
 #     "impact": "",
 # }
+
+
+# --------------------------------------------------------------------------
+# SQL 튜닝 (sqltune)
+# --------------------------------------------------------------------------
+# 사내 튜닝 기준이 따로 있으면 그 문서를 가리킨다.
+# 규칙 엔진과 LLM 프롬프트가 같은 문서를 본다.
+# SQLTUNE_RULES_FILE = r"D:\standards\oracle_tuning.md"
+
+# 쿼리를 실제로 실행해 비교할 것인가. 기본 False — 실행은 곧 운영 DB 부하다.
+# CLI 는 --run 으로 그때만 켠다. MCP 툴은 이 값과 무관하게 실행하지 않는다.
+# SQLTUNE_EXECUTE = False
+# SQLTUNE_MAX_ROWS = 100
+# SQLTUNE_TIMEOUT_SEC = 60
+# SQLTUNE_RUNS = 2

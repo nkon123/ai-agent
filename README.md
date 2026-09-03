@@ -131,6 +131,7 @@ agents/
   usage/            식별자 사용처 찾기 — core/ 를 실제로 쓰는 샘플
   iferr/            인터페이스 오류 메일 → 키 추출 → DB 영향 확인
   impact/           테이블 영향도 — 소스에서 SQL 문장을 잘라 읽기/쓰기 판정
+  sqltune/          SQL 튜닝 진단 — 기준 문서 기반 규칙 + 실행계획 + 인덱스 제안
 core/sqlstmt.py     완결된 SQL 문장 잘라내기·판정
 core/outlook.py     Outlook 메일 읽기 (COM / .eml). 읽기 전용
 samples/src/        usage 를 바로 돌려 볼 예제 소스 (함정 포함)
@@ -157,6 +158,7 @@ tests/              core/ + MCP 회귀 테스트
 |---|---|---|
 | `check_interface_errors` | combo | 오류 메일 → 키 → DB → 영향까지 한 번에 |
 | `analyze_table_impact` | combo | 테이블을 쓰는 SQL 문장 찾기 |
+| `tune_query` | combo | SQL 진단 + 인덱스 제안 (실행 안 함) |
 | `find_usage` | combo | 소스에서 식별자 사용처 찾기 |
 | `echo_classify` | combo | 문장 분류 (샘플) |
 | `list_error_mails` | step | 메일만 (DB 안 붙음) |
@@ -166,6 +168,7 @@ tests/              core/ + MCP 회귀 테스트
 | `describe_settings` | step | 서버가 보고 있는 설정 |
 | `check_llm_status` | step | Ollama 연결·모델 확인 |
 | `check_db_status` | step | Oracle 접속·조회 SQL 설정 확인 |
+| `explain_query` | step | 실행계획만 보기 |
 
 `step` 툴은 챗봇 대화에는 안 뜨지만 `/api/tools` 목록과 다른 MCP 호스트에서는
 보인다. "왜 결과가 비었나"를 가를 때 `describe_settings` → `list_source_roots`
@@ -185,6 +188,7 @@ tests/              core/ + MCP 회귀 테스트
 | `usage` | 소스에서 식별자 사용처 찾기 | `core/` 를 실제로 쓰는 형태. 캐시 키 설계, 근거 남기기, '없다'와 '모른다' 구분 |
 | `iferr` | 인터페이스 오류 메일 → DB 영향 확인 | 외부 시스템(Outlook·Oracle) 연동. 실패를 '확인 불가'로 남기기, 개인정보 마스킹 |
 | `impact` | 테이블이 소스 어디서 읽히고 쓰이는지 | 문장 단위 판정, LLM 이 규칙을 뒤집지 않게 하기 |
+| `sqltune` | 느린 SQL 진단·인덱스 제안 | 안전 게이트(SELECT 만), 판정 기준을 문서로 분리 |
 
 `usage` 를 돌려 보면 `core/text.py` 가 왜 그렇게 생겼는지 바로 보인다.
 

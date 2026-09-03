@@ -22,6 +22,8 @@ import contextlib
 import re
 import sys
 import threading
+import time
+import uuid
 from typing import Any, Iterator, Mapping, Sequence
 
 from config import (
@@ -272,6 +274,169 @@ def find_value(
                 {"table": c["TABLE_NAME"], "column": c["COLUMN_NAME"], "count": cnt}
             )
     return hits
+
+
+# --------------------------------------------------------------------------
+# 실행 계획 (튜닝용)
+# --------------------------------------------------------------------------
+
+# 플랜에서 우리가 보는 컬럼. ALL_ROWS 대신 필요한 것만 가져온다.
+_PLAN_COLS = (
+    "id, parent_id, LPAD(' ', depth) || operation AS operation, options, "
+    "object_name, cardinality, cost, bytes, access_predicates, filter_predicates"
+)
+
+
+def explain_plan(sql: str, timeout: int | None = None) -> list[dict[str, Any]]:
+    """쿼리를 실행하지 않고 실행 계획만 받는다.
+
+    EXPLAIN PLAN 은 SQL 을 파싱해 계획만 만든다. 행을 읽지 않으므로
+    운영 DB 에 부하를 주지 않는다. 튜닝의 기본 도구이자 안전한 쪽이다.
+
+    PLAN_TABLE 이 없으면(ORA-02404 등) 그대로 예외로 알린다.
+    """
+    statement_id = f"sqltune_{uuid.uuid4().hex[:16]}"
+    with get_conn() as conn:
+        conn.call_timeout = int((timeout or DB_TIMEOUT_SEC) * 1000)
+        cur = conn.cursor()
+        try:
+            # SQL 본문은 사용자가 준 것이라 바인드로 넘길 수 없다(문장 자체다).
+            # 대신 실행하지 않는 EXPLAIN PLAN 이고, 호출부가 SELECT 인지
+            # 먼저 검사한다(agents/sqltune 의 안전 게이트).
+            cur.execute(
+                f"EXPLAIN PLAN SET STATEMENT_ID = :sid FOR {sql}",
+                {"sid": statement_id},
+            )
+            cur.execute(
+                f"SELECT {_PLAN_COLS} FROM plan_table "
+                "WHERE statement_id = :sid ORDER BY id",
+                {"sid": statement_id},
+            )
+            cols = [d[0] for d in cur.description]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+            # 남겨 두면 PLAN_TABLE 이 계속 커진다. 세션 임시 테이블이 아닌
+            # 사이트도 있어 명시적으로 지운다.
+            with contextlib.suppress(Exception):
+                cur.execute(
+                    "DELETE FROM plan_table WHERE statement_id = :sid",
+                    {"sid": statement_id},
+                )
+                conn.commit()
+            return rows
+        finally:
+            with contextlib.suppress(Exception):
+                cur.close()
+
+
+def execute_with_stats(
+    sql: str,
+    binds: Mapping[str, Any] | None = None,
+    max_rows: int = 100,
+    timeout: int | None = None,
+    runs: int = 2,
+) -> dict[str, Any]:
+    """쿼리를 실제로 실행하고 수행 시간과 실제 계획을 받는다.
+
+    같은 세션에서 실행 → DBMS_XPLAN.DISPLAY_CURSOR 순으로 부른다.
+    다른 세션에서는 방금 그 커서를 볼 수 없다.
+
+    GATHER_PLAN_STATISTICS 힌트를 붙여 A-Rows(실제 행 수)와 Buffers(논리적
+    읽기)를 받는다. 수행 시간은 캐시·부하에 흔들리지만 Buffers 는 재현된다.
+
+    runs: 첫 회는 하드파싱과 캐시 적재가 섞이므로 2회 이상 재고 최소값을 쓴다.
+    """
+    hinted = _add_gather_hint(sql)
+    elapsed: list[float] = []
+    row_count = 0
+
+    with get_conn() as conn:
+        conn.call_timeout = int((timeout or DB_TIMEOUT_SEC) * 1000)
+        cur = conn.cursor()
+        try:
+            for _ in range(max(1, runs)):
+                t0 = time.monotonic()
+                cur.execute(hinted, binds or {})
+                fetched = cur.fetchmany(max_rows)
+                # 남은 행을 다 읽지 않으면 수행 시간이 실제보다 짧게 나온다.
+                # 그렇다고 수백만 행을 받을 수는 없으니 상한까지만 읽었다는
+                # 사실을 결과에 남긴다.
+                elapsed.append(time.monotonic() - t0)
+                row_count = len(fetched)
+
+            plan_text = ""
+            try:
+                cur.execute(
+                    "SELECT plan_table_output FROM "
+                    "TABLE(DBMS_XPLAN.DISPLAY_CURSOR(NULL, NULL, 'ALLSTATS LAST'))"
+                )
+                plan_text = "\n".join(r[0] for r in cur.fetchall() if r[0])
+            except Exception as e:
+                # v$ 뷰 권한이 없는 계정이 흔하다. 실행 결과까지 버리지 않는다.
+                plan_text = f"(실제 계획을 받지 못했다: {e})"
+
+            return {
+                "elapsed_sec": min(elapsed),
+                "elapsed_all": elapsed,
+                "rows_fetched": row_count,
+                "truncated": row_count >= max_rows,
+                "plan_text": plan_text,
+                "buffers": _parse_buffers(plan_text),
+            }
+        finally:
+            with contextlib.suppress(Exception):
+                cur.close()
+
+
+def _add_gather_hint(sql: str) -> str:
+    """첫 키워드 뒤에 GATHER_PLAN_STATISTICS 힌트를 넣는다."""
+    m = re.match(r"(?is)\s*(SELECT|WITH)\b", sql)
+    if not m:
+        return sql
+    at = m.end()
+    return sql[:at] + " /*+ GATHER_PLAN_STATISTICS */" + sql[at:]
+
+
+def _parse_buffers(plan_text: str) -> int | None:
+    """DISPLAY_CURSOR 출력에서 루트 행의 Buffers 를 뽑는다.
+
+    논리적 읽기는 수행 시간보다 재현성이 높아 비교 기준으로 쓴다.
+    """
+    for line in plan_text.splitlines():
+        # |   0 | SELECT STATEMENT | ... | 1 |00:00:00.01 | 1234 |
+        if re.search(r"\|\s*0\s*\|", line):
+            nums = re.findall(r"\|\s*([\d,]+)\s*\|", line)
+            if nums:
+                return int(nums[-1].replace(",", ""))
+    return None
+
+
+def existing_indexes(table: str, schema: str | None = None) -> list[dict[str, Any]]:
+    """테이블의 기존 인덱스와 컬럼 순서.
+
+    선두 컬럼이 같은 인덱스가 이미 있으면 새로 만들지 않는다.
+    중복 인덱스는 조회를 빠르게 하지 않고 DML 만 느리게 한다.
+    """
+    owner = (schema or ORACLE_SCHEMA or ORACLE_USER or "").upper()
+    rows = query(
+        """
+        SELECT ic.index_name, ic.column_position, ic.column_name, i.uniqueness
+          FROM all_ind_columns ic
+          JOIN all_indexes i
+            ON i.owner = ic.index_owner AND i.index_name = ic.index_name
+         WHERE ic.table_owner = :owner AND ic.table_name = :tab
+         ORDER BY ic.index_name, ic.column_position
+        """,
+        {"owner": owner, "tab": table.upper()},
+    )
+    grouped: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        g = grouped.setdefault(
+            r["INDEX_NAME"],
+            {"name": r["INDEX_NAME"], "unique": r["UNIQUENESS"] == "UNIQUE",
+             "columns": []},
+        )
+        g["columns"].append(r["COLUMN_NAME"])
+    return list(grouped.values())
 
 
 def schema_prefix() -> str:
