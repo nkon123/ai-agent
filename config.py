@@ -114,6 +114,19 @@ ORACLE_USER: str | None = _env_opt("ORACLE_USER")
 ORACLE_PASSWORD: str | None = _env_opt("ORACLE_PASSWORD")
 DB_TIMEOUT_SEC: int = _env_int("DB_TIMEOUT_SEC", 30)
 
+# thick 모드(Oracle Client 라이브러리 사용).
+# python-oracledb 는 기본이 thin 모드라 클라이언트 설치 없이 붙지만,
+# 오래된 서버(대개 12.1 미만)는 지원하지 않아 DPY-3010 으로 거절당한다.
+# 그때 thick 모드로 바꾸면 된다. False 로 두어도 DPY-3010 이 나면
+# 자동으로 한 번 재시도하므로, 보통은 건드릴 필요가 없다.
+ORACLE_THICK_MODE: bool = _env_bool("ORACLE_THICK_MODE", False)
+
+# Oracle Client(Instant Client) 라이브러리 폴더.
+# 비우면 PATH 와 레지스트리에서 찾는다. 사내 PC 에 이미 클라이언트가
+# 깔려 있으면(SQL Developer, Toad 등) 대개 비워 두어도 된다.
+#     ORACLE_CLIENT_LIB_DIR = r"C:\oracle\instantclient_21_13"
+ORACLE_CLIENT_LIB_DIR: str = _env_str("ORACLE_CLIENT_LIB_DIR", "")
+
 # 테이블이 있는 스키마(소유자). 비우면 접속 계정과 같다고 본다.
 # 읽기 전용 계정으로 접속해 다른 스키마의 테이블을 보는 경우가 흔하다.
 ORACLE_SCHEMA: str | None = _env_opt("ORACLE_SCHEMA")
@@ -408,6 +421,8 @@ def describe() -> str:
         f"  ORACLE_USER  : {ORACLE_USER or '(미설정)'}",
         f"  ORACLE_PW    : {'설정됨' if ORACLE_PASSWORD else '(미설정)'}",
         f"  ORACLE_SCHEMA: {ORACLE_SCHEMA or '(접속 계정과 동일)'}",
+        f"  ORACLE_MODE  : {'thick' if ORACLE_THICK_MODE else 'thin (필요시 자동 전환)'}"
+        + (f" / {ORACLE_CLIENT_LIB_DIR}" if ORACLE_CLIENT_LIB_DIR else ""),
         f"  DB_TIMEOUT   : {DB_TIMEOUT_SEC}s",
         f"  오류 키워드   : {', '.join(MAIL_SUBJECT_KEYWORDS) or '(없음 — 전부 대상 아님)'}"
         + f"  [{MAIL_SUBJECT_MATCH}]",

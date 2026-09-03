@@ -644,3 +644,72 @@ def test_find_value_reports_unreadable_columns(monkeypatch: Any):
     monkeypatch.setattr(oracle, "query", fake_query)
     hits = oracle.find_value("X", schema="ERP")
     assert hits[0]["count"] is None and "ORA-00942" in hits[0]["error"]
+
+
+def test_dpy3010_triggers_thick_mode_retry(monkeypatch: Any):
+    """DPY-3010 은 '이 서버 버전은 thin 모드 미지원'이다.
+
+    안내만 하고 끝내면 사용자가 설정을 고치고 다시 실행해야 한다.
+    Oracle Client 가 있으면 그 자리에서 전환해 재시도한다.
+    """
+    from core import oracle
+
+    events: list[str] = []
+
+    class FakeDriver:
+        def init_oracle_client(self, lib_dir: Any = None) -> None:
+            events.append("init_thick")
+
+        def connect(self, **kw: Any) -> Any:
+            events.append("connect")
+            if events.count("connect") == 1:
+                raise RuntimeError("DPY-3010: connections to this database server ...")
+
+            class Conn:
+                call_timeout = 0
+
+                def cursor(self):
+                    raise AssertionError("이 테스트에서는 쿼리까지 가지 않는다")
+
+                def close(self):
+                    pass
+
+            return Conn()
+
+    monkeypatch.setattr(oracle, "_client_mode", "thin")
+    monkeypatch.setattr(oracle, "_import_driver", lambda: FakeDriver())
+    monkeypatch.setattr(oracle, "ORACLE_DSN", "host/db")
+    monkeypatch.setattr(oracle, "ORACLE_USER", "u")
+    monkeypatch.setattr(oracle, "ORACLE_PASSWORD", "p")
+
+    with oracle.get_conn():
+        pass
+
+    assert events == ["connect", "init_thick", "connect"]
+    assert oracle.client_mode() == "thick"
+    # 모드는 프로세스 전역이라 되돌려 두지 않으면 뒤 테스트에 샌다.
+    monkeypatch.setattr(oracle, "_client_mode", "thin")
+
+
+def test_thick_mode_failure_explains_how_to_fix(monkeypatch: Any):
+    """클라이언트가 없으면 무엇을 해야 하는지 알려 준다."""
+    from core import oracle
+
+    class FakeDriver:
+        def init_oracle_client(self, lib_dir: Any = None) -> None:
+            raise RuntimeError("DPI-1047: Cannot locate a 64-bit Oracle Client library")
+
+        def connect(self, **kw: Any) -> Any:
+            raise RuntimeError("DPY-3010: not supported")
+
+    monkeypatch.setattr(oracle, "_client_mode", "thin")
+    monkeypatch.setattr(oracle, "_import_driver", lambda: FakeDriver())
+    monkeypatch.setattr(oracle, "ORACLE_DSN", "host/db")
+    monkeypatch.setattr(oracle, "ORACLE_USER", "u")
+    monkeypatch.setattr(oracle, "ORACLE_PASSWORD", "p")
+
+    with pytest.raises(oracle.OracleUnavailable) as ei:
+        with oracle.get_conn():
+            pass
+    msg = str(ei.value)
+    assert "ORACLE_CLIENT_LIB_DIR" in msg and "32/64비트" in msg

@@ -20,13 +20,17 @@ from __future__ import annotations
 
 import contextlib
 import re
+import sys
+import threading
 from typing import Any, Iterator, Mapping, Sequence
 
 from config import (
     DB_TIMEOUT_SEC,
+    ORACLE_CLIENT_LIB_DIR,
     ORACLE_DSN,
     ORACLE_PASSWORD,
     ORACLE_SCHEMA,
+    ORACLE_THICK_MODE,
     ORACLE_USER,
 )
 
@@ -55,6 +59,40 @@ def _import_driver():
     return oracledb
 
 
+# thick 모드 전환은 프로세스 전역이고 한 번만 할 수 있다.
+# 여러 스레드가 동시에 붙을 수 있으므로(Flask, MCP 브리지) 락으로 감싼다.
+_client_lock = threading.Lock()
+_client_mode = "thin"
+
+
+def client_mode() -> str:
+    """현재 드라이버 모드. 진단 화면에 보여 준다."""
+    return _client_mode
+
+
+def _enable_thick_mode(oracledb: Any) -> None:
+    """Oracle Client 라이브러리를 적재해 thick 모드로 바꾼다.
+
+    lib_dir 이 비어 있으면 PATH·레지스트리에서 찾는다. 사내 PC 에 이미
+    클라이언트가 깔려 있으면(SQL Developer, Toad 등) 대개 그것으로 된다.
+    """
+    global _client_mode
+    with _client_lock:
+        if _client_mode == "thick":
+            return
+        try:
+            oracledb.init_oracle_client(lib_dir=ORACLE_CLIENT_LIB_DIR or None)
+        except Exception as e:
+            raise OracleUnavailable(
+                "Oracle Client 라이브러리를 적재하지 못해 thick 모드로 전환할 수 없다: "
+                f"{e}\n"
+                "  - Instant Client 를 설치하고 config_local.py 에 "
+                'ORACLE_CLIENT_LIB_DIR = r"C:\\oracle\\instantclient_21_13" 지정\n'
+                "  - 32/64비트가 파이썬과 같아야 한다"
+            ) from e
+        _client_mode = "thick"
+
+
 @contextlib.contextmanager
 def get_conn() -> Iterator[Any]:
     """연결 컨텍스트 매니저. 블록을 벗어나면 반드시 닫는다."""
@@ -64,15 +102,39 @@ def get_conn() -> Iterator[Any]:
             "ORACLE_PASSWORD 를 채우거나 동명의 환경변수를 설정할 것."
         )
     oracledb = _import_driver()
-    try:
-        conn = oracledb.connect(
+    if ORACLE_THICK_MODE:
+        _enable_thick_mode(oracledb)
+
+    def _connect():
+        return oracledb.connect(
             user=ORACLE_USER, password=ORACLE_PASSWORD, dsn=ORACLE_DSN
         )
+
+    try:
+        conn = _connect()
     except Exception as e:
-        # 예외 메시지에 비밀번호가 섞이지 않도록 DSN/USER 만 남긴다.
-        raise OracleUnavailable(
-            f"Oracle 접속 실패 (dsn={ORACLE_DSN}, user={ORACLE_USER}): {e}"
-        ) from e
+        # DPY-3010 = 이 서버 버전은 thin 모드가 지원하지 않는다(대개 12.1 미만).
+        # 설정을 고치라고 안내만 하면 한 번 더 왕복해야 하니, Oracle Client 가
+        # 있으면 그 자리에서 thick 모드로 바꿔 한 번 재시도한다.
+        if "DPY-3010" in str(e) and _client_mode != "thick":
+            print(
+                "[oracle] 서버가 thin 모드를 지원하지 않는다(DPY-3010). "
+                "thick 모드로 전환해 재시도한다.",
+                file=sys.stderr,
+            )
+            _enable_thick_mode(oracledb)   # 실패하면 안내와 함께 예외
+            try:
+                conn = _connect()
+            except Exception as e2:
+                raise OracleUnavailable(
+                    f"Oracle 접속 실패 (thick 모드, dsn={ORACLE_DSN}, "
+                    f"user={ORACLE_USER}): {e2}"
+                ) from e2
+        else:
+            # 예외 메시지에 비밀번호가 섞이지 않도록 DSN/USER 만 남긴다.
+            raise OracleUnavailable(
+                f"Oracle 접속 실패 (dsn={ORACLE_DSN}, user={ORACLE_USER}): {e}"
+            ) from e
     try:
         yield conn
     finally:
@@ -101,7 +163,7 @@ def check_connection(timeout: int | None = None) -> tuple[bool, str]:
         return False, "연결은 됐으나 dual 조회 결과가 비었다 — 확인 필요"
     return True, (
         f"접속 OK (dsn={ORACLE_DSN}, 접속계정={rows[0].get('DB_USER')}, "
-        f"서버시각={rows[0].get('NOW')})"
+        f"모드={client_mode()}, 서버시각={rows[0].get('NOW')})"
     )
 
 

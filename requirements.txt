@@ -26,6 +26,9 @@ pytest>=8.0
 
 # Oracle 을 쓰는 에이전트가 있을 때만 필요하다.
 # 없어도 나머지 기능은 동작한다. 필요해지면 주석을 풀 것.
+# 기본은 thin 모드라 클라이언트 설치가 필요 없지만, 오래된 서버(대개 12.1
+# 미만)는 DPY-3010 으로 거절한다. 그때는 Oracle Client 가 설치된 PC 에서
+# thick 모드로 자동 전환된다(config.ORACLE_THICK_MODE 참고).
 # oracledb>=2.0
 
 # langchain-mcp-adapters 는 쓰지 않는다: mcp<2.0 을 핀하고 있어
