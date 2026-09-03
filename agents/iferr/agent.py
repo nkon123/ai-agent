@@ -480,8 +480,65 @@ if __name__ == "__main__":
     ap.add_argument("--hours", type=int, default=None, help="몇 시간 전까지 볼지")
     ap.add_argument("--key", default="", help="메일을 읽지 않고 이 키만 확인")
     ap.add_argument("--detail", choices=["full", "summary", "minimal"], default="full")
+    # 아래 셋은 진단용이다. DB 를 건드리지 않는다.
+    ap.add_argument("--folders", action="store_true",
+                    help="Outlook 폴더 목록 (MAIL_FOLDER 에 넣을 값 찾기)")
+    ap.add_argument("--mails", action="store_true",
+                    help="메일 목록만 본다. DB 조회를 하지 않는다")
+    ap.add_argument("--dump", type=int, metavar="N", default=0,
+                    help="최근 오류 메일 N통의 본문을 out/ 에 저장(정규식 확인용)")
     args = ap.parse_args()
 
+    # ---- 진단 모드 ---------------------------------------------------------
+    if args.folders:
+        from core.outlook import list_folders
+
+        try:
+            for path in list_folders():
+                print(path)
+        except Exception as e:
+            print(f"[실패] {e}")
+            raise SystemExit(1)
+        raise SystemExit(0)
+
+    if args.mails or args.dump:
+        r = list_mails(hours=args.hours)
+        print(f"메일 {r['mail_count']}통 (오류로 분류 {r['error_count']}통)\n")
+        print(f"{'오류':<5}{'수신시각':<18}{'키':<24}제목")
+        print("─" * 90)
+        for m in r["mails"]:
+            mark = "  O  " if m["is_error"] else "  .  "
+            keys = ", ".join(m["keys"]) or ("-" if not m["is_error"] else "못찾음")
+            print(f"{mark}{m['received'][:16]:<18}{keys:<24}{m['subject'][:40]}")
+        for w in r["warnings"]:
+            print(f"\n[확인 필요] {w}")
+
+        if args.dump:
+            # 본문에는 개인정보가 있을 수 있다. out/ 은 .gitignore 에 있어
+            # 커밋되지 않지만, 외부로 보낼 때는 반드시 내용을 확인할 것.
+            from core.outlook import read_mails
+
+            out_dir = _ROOT / "out"
+            out_dir.mkdir(exist_ok=True)
+            saved = 0
+            for mail in read_mails(since_hours=args.hours):
+                if saved >= args.dump or not is_error_mail(mail):
+                    continue
+                path = out_dir / f"mail_{saved + 1}.txt"
+                path.write_text(
+                    f"제목: {mail.subject}\n발신: {mail.sender_masked}\n"
+                    f"수신: {mail.received}\n{'─' * 60}\n{mail.body}",
+                    encoding="utf-8",
+                )
+                print(f"저장: {path}")
+                saved += 1
+            print(
+                "\n본문을 보고 config_local.py 의 IFERR_KEY_PATTERNS 를 맞출 것. "
+                "(개인정보가 있을 수 있으니 외부 공유 전 확인)"
+            )
+        raise SystemExit(0)
+
+    # ---- 통합 실행 ---------------------------------------------------------
     result = run_iferr(hours=args.hours, key=args.key, detail=args.detail)
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
 

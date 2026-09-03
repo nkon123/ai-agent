@@ -16,6 +16,49 @@ python agents/iferr/agent.py --key IF_ORD_SEND  # 메일을 읽지 않고 이 �
 MAIL_BACKEND=eml python agents/iferr/agent.py   # 파일로 테스트
 ```
 
+## 사내 PC 첫 점검 (DB 없이 메일만)
+
+DB 설정 전에 메일부터 확인한다. 아래 셋은 **DB 를 건드리지 않는다.**
+
+```bat
+pip install pywin32
+
+:: 1. 폴더 이름 확인 — 여기서 나온 경로를 그대로 복사해 쓴다
+python agents\iferr\agent.py --folders
+
+:: 2. 메일이 읽히는지 / 키가 뽑히는지
+python agents\iferr\agent.py --mails --hours 72
+
+:: 3. 키를 못 뽑으면 본문을 저장해서 형식을 본다 (out/ 은 커밋 안 됨)
+python agents\iferr\agent.py --dump 2 --hours 72
+```
+
+`--mails` 출력:
+
+```
+메일 12통 (오류로 분류 4통)
+
+오류   수신시각              키                       제목
+─────────────────────────────────────────────────────────────
+  O  2026-09-03T13:48  IF_ORD_SEND             [연계오류] 주문 인터페이스 전송 실패
+  O  2026-09-03T10:48  못찾음                    재고 연계 오류 발생
+  .  2026-09-03T12:48  -                        주간 연계 처리 결과 보고
+```
+
+| 증상 | 볼 곳 |
+|---|---|
+| Outlook 연결 실패 | Outlook 이 실행 중인가, 같은 사용자 세션인가, `pip install pywin32` |
+| 폴더를 못 찾음 | `--folders` 결과에서 경로를 그대로 복사 (`받은 편지함` vs `Inbox`) |
+| 메일 0통 | `--hours` 를 늘려 본다. 폴더가 맞는지 확인 |
+| 오류로 분류 안 됨(`.`) | `MAIL_SUBJECT_KEYWORDS` 에 실제 제목의 단어를 추가 |
+| 키 `못찾음` | `--dump` 로 본문을 보고 `IFERR_KEY_PATTERNS` 를 맞춘다 |
+
+Outlook 없이(개발 PC에서) 확인하려면 `MAIL_BACKEND=eml` 로 `samples/mail/` 을 읽는다.
+
+```bash
+MAIL_BACKEND=eml python agents/iferr/agent.py --mails
+```
+
 ## 설정할 것 세 가지
 
 ### 1. 메일 (`config.py`)

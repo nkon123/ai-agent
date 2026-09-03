@@ -44,6 +44,8 @@ ORACLE_PASSWORD = "여기에 비밀번호"
 # --------------------------------------------------------------------------
 MAIL_BACKEND = "com"
 # Outlook 규칙으로 오류 메일만 모아 둔 하위 폴더를 지정하면 훨씬 빠르다.
+# 폴더 이름을 추측하지 말 것. 아래 명령으로 나온 경로를 그대로 복사한다.
+#     python agents\iferr\agent.py --folders
 MAIL_FOLDER = r"받은 편지함\인터페이스"
 MAIL_LOOKBACK_HOURS = 24
 

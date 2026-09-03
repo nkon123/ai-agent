@@ -96,6 +96,58 @@ def read_mails(
     raise MailUnavailable(f"알 수 없는 MAIL_BACKEND: {backend} (com | eml)")
 
 
+def list_folders(max_depth: int = 3) -> list[str]:
+    r"""Outlook 의 폴더 경로 목록. config.MAIL_FOLDER 에 넣을 값을 찾는 용도다.
+
+    사내 PC 에서 가장 먼저 막히는 곳이 폴더 이름이다. 한글 Outlook 은
+    '받은 편지함', 영문은 'Inbox' 이고, 계정이 여러 개면 최상위 이름도
+    다르다. 추측하지 말고 이 목록에서 그대로 복사해 쓸 것.
+
+    깊이를 제한하는 이유: 폴더가 수백 개인 사서함에서 전체를 훑으면
+    COM 왕복이 그만큼 일어나 몇 분씩 걸린다.
+    """
+    if MAIL_BACKEND.lower() != "com":
+        raise MailUnavailable(
+            f"폴더 목록은 com 백엔드에서만 의미가 있다 (현재 {MAIL_BACKEND}). "
+            "eml 백엔드는 config.MAIL_EML_DIR 폴더의 .eml 파일을 읽는다."
+        )
+    try:
+        import pythoncom  # type: ignore
+        import win32com.client  # type: ignore
+    except ImportError as e:
+        raise MailUnavailable(
+            "pywin32 가 설치되어 있지 않다. pip install pywin32 후 다시 시도할 것."
+        ) from e
+
+    pythoncom.CoInitialize()
+    try:
+        ns = win32com.client.Dispatch("Outlook.Application").GetNamespace("MAPI")
+        out: list[str] = []
+
+        def walk(folders, prefix: str, depth: int) -> None:
+            if depth > max_depth:
+                return
+            for i in range(1, folders.Count + 1):
+                try:
+                    f = folders.Item(i)
+                    path = f"{prefix}\\{f.Name}" if prefix else f.Name
+                    # 메일 수를 함께 보여 주면 어느 폴더가 대상인지 바로 안다.
+                    try:
+                        count = f.Items.Count
+                    except Exception:
+                        count = -1
+                    out.append(path if count < 0 else f"{path}  ({count}통)")
+                    walk(f.Folders, path, depth + 1)
+                except Exception:
+                    # 접근 권한이 없는 폴더 하나 때문에 전체가 멈추면 안 된다.
+                    continue
+
+        walk(ns.Folders, "", 1)
+        return out
+    finally:
+        pythoncom.CoUninitialize()
+
+
 # --------------------------------------------------------------------------
 # COM 백엔드 — 로컬 Outlook
 # --------------------------------------------------------------------------
