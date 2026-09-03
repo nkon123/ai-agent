@@ -199,3 +199,77 @@ def test_llm_conflict_is_reported(monkeypatch: Any):
     out = impact.verify(state)
     assert out["statements"][0]["conflict"] is True
     assert any("확인 필요" in w for w in out["warnings"])
+
+
+# --------------------------------------------------------------------------
+# 실제 소스 유형 — Pro*C(.pc) / 프로시저(.prc) / UI 쿼리(.xml)
+# --------------------------------------------------------------------------
+
+XML_QUERY = """<mapper namespace="order">
+  <!-- IF_T 를 읽는다 (주석) -->
+  <select id="selectList" resultType="map">
+    SELECT A, B
+      FROM IF_T
+     WHERE STATUS = #{status}
+  </select>
+
+  <update id="updateStatus">
+    UPDATE IF_T SET STATUS = #{status}
+  </update>
+</mapper>
+"""
+
+
+def test_xml_statement_uses_tag_boundaries():
+    """UI 쿼리 XML 의 SQL 에는 세미콜론이 없다.
+
+    세미콜론만 찾으면 파일 전체를 한 덩어리로 물고 온다.
+    """
+    st = statement_at(XML_QUERY, 5, "xml")
+    assert st.complete
+    assert st.start_line == 3 and st.end_line == 7      # <select> ~ </select>
+    assert "SELECT A, B" in st.sql
+    assert "UPDATE" not in st.sql                        # 다음 쿼리를 삼키지 않는다
+
+
+def test_xml_tag_name_does_not_decide_kind():
+    """<update> 안의 SELECT 를 update 로 분류하면 안 된다.
+
+    태그 이름 'select'/'update' 가 SQL 키워드처럼 보이므로 태그를 지운 뒤
+    판정한다.
+    """
+    st = statement_at(XML_QUERY, 10, "xml")
+    info = classify(st.sql, "IF_T", "xml")
+    assert info.kind == "update" and info.role == "write"
+
+    sel = classify(statement_at(XML_QUERY, 5, "xml").sql, "IF_T", "xml")
+    assert sel.kind == "select" and sel.role == "read"
+
+
+def test_xml_comment_mention_is_not_a_usage():
+    r = run_impact("IF_ORDER_TMP", root="SAMPLE")
+    xml = [s for s in r["statements"] if s["file"].endswith(".xml")]
+    assert len(xml) == 2 and all(s["start_line"] != 4 for s in xml)
+
+
+def test_procedure_insert_select_is_read_for_source_table():
+    """INSERT INTO A SELECT FROM T — T 는 읽기, A 는 쓰기다.
+
+    실제 적재 프로시저에서 가장 흔한 형태다. 문장 종류만 보면 틀린다.
+    """
+    r = run_impact("IF_ORDER_TMP", root="SAMPLE")
+    prc = {s["start_line"]: s for s in r["statements"] if s["file"].endswith(".prc")}
+    assert prc[4]["kind"] == "insert" and prc[4]["role"] == "read"
+    assert prc[9]["role"] == "write"
+
+    target = run_impact("ORD_HDR", root="SAMPLE")
+    prc_t = {s["start_line"]: s for s in target["statements"]
+             if s["file"].endswith(".prc")}
+    assert prc_t[4]["role"] == "write"
+
+
+def test_all_three_source_types_are_scanned():
+    """.pc / .prc / .xml 이 모두 스캔 대상이어야 한다."""
+    r = run_impact("IF_ORDER_TMP", root="SAMPLE")
+    suffixes = {Path(s["file"]).suffix for s in r["statements"]}
+    assert {".pc", ".prc", ".xml"} <= suffixes

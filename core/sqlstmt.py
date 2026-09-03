@@ -32,7 +32,15 @@ _STMT_START = re.compile(
 
 # SQL 이 소스에 그대로 박히는 언어. 이쪽은 문자열을 지워도 SQL 이 남는다.
 # 반대로 java/js 는 SQL 이 문자열 안에 있어 지우면 안 된다.
-_INLINE_SQL_LANGS = {"sql", "plsql", "pro", "c", "cpp"}
+# xml(UI 쿼리)은 SQL 이 태그 사이 '텍스트'라 작은따옴표 리터럴만 지워진다.
+_INLINE_SQL_LANGS = {"sql", "plsql", "pro", "c", "cpp", "xml"}
+
+# XML 에서 쿼리 한 건을 감싸는 태그. MyBatis 계열과 사내 포맷을 함께 본다.
+_XML_OPEN = re.compile(
+    r"(?i)<\s*(select|insert|update|delete|merge|sql|statement|query|stmt)"
+    r"(?![A-Za-z0-9_])[^>]*>"
+)
+_XML_CLOSE_FMT = r"(?i)</\s*{tag}\s*>"
 
 
 def masks_strings(lang: str) -> bool:
@@ -55,6 +63,40 @@ class Statement:
     hit_line: int        # 테이블 이름이 나온 줄
 
 
+def _xml_statement(
+    scan_lines: list[str], orig_lines: list[str], i: int, max_lines: int, line_no: int
+) -> Statement | None:
+    """XML 쿼리는 세미콜론이 아니라 태그로 경계가 정해진다.
+
+    UI 쿼리 XML 의 SQL 에는 끝에 세미콜론이 없는 경우가 대부분이다.
+    세미콜론만 찾으면 파일 전체를 한 덩어리로 물고 온다.
+    """
+    start = None
+    tag = ""
+    for j in range(i, max(-1, i - max_lines), -1):
+        m = _XML_OPEN.search(scan_lines[j])
+        if m:
+            start, tag = j, m.group(1)
+            break
+    if start is None:
+        return None
+
+    close = re.compile(_XML_CLOSE_FMT.format(tag=re.escape(tag)))
+    end, complete = min(len(scan_lines) - 1, start + max_lines - 1), False
+    for j in range(i, min(len(scan_lines), start + max_lines)):
+        if close.search(scan_lines[j]):
+            end, complete = j, True
+            break
+
+    return Statement(
+        start_line=start + 1,
+        end_line=end + 1,
+        sql="\n".join(orig_lines[start : end + 1]),
+        complete=complete,
+        hit_line=line_no,
+    )
+
+
 def statement_at(
     text: str, line_no: int, lang: str = "c", max_lines: int = 120
 ) -> Statement:
@@ -72,6 +114,12 @@ def statement_at(
     scan_lines = scan.splitlines()
     orig_lines = text.splitlines()
     i = max(0, min(line_no - 1, len(scan_lines) - 1))
+
+    if lang.lower() == "xml":
+        found = _xml_statement(scan_lines, orig_lines, i, max_lines, line_no)
+        if found is not None:
+            return found
+        # 태그를 못 찾으면 아래 세미콜론 방식으로 떨어진다.
 
     # 뒤로: 이전 문장의 끝(세미콜론) 다음 줄부터가 이 문장의 후보 시작이다.
     start = max(0, i - max_lines + 1)
@@ -129,6 +177,11 @@ def classify(sql: str, table: str, lang: str = "sql") -> StmtInfo:
         body = strip_comments(sql, lang, mask_strings=False)
     except ValueError:
         body = sql
+    if lang.lower() == "xml":
+        # 태그를 지운다. <select id="..."> 의 'select' 를 SQL 키워드로 보면
+        # <update> 안의 SELECT 를 update 로 잘못 분류한다.
+        # <if test="...">, <isNotEmpty> 같은 동적 태그도 함께 사라진다.
+        body = re.sub(r"<[^>]*>", " ", body)
     flat = " ".join(body.split())          # 줄바꿈을 없애야 구절이 이어진다
     t = re.escape(table)
 

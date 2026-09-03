@@ -17,6 +17,19 @@ USE_LLM=false python agents/impact/agent.py IF_ORDER_TMP   # 규칙만
 ```
 
 ```
+── samples/src/ord_batch.prc:4~7 [insert/read] 규칙=from
+  INSERT INTO ORD_HDR (ORD_NO, TOTAL_AMT)
+  SELECT ORD_NO, TOTAL_AMT
+    FROM IF_ORDER_TMP
+   WHERE STATUS = 'N';            ← INSERT 문이지만 IF_ORDER_TMP 는 '읽기'다
+
+── samples/src/order_query.xml:5~9 [select/read] 규칙=from
+  <select id="selectOrderList" resultType="map">
+    SELECT ORD_NO, TOTAL_AMT
+      FROM IF_ORDER_TMP
+     WHERE STATUS = #{status}
+  </select>                        ← 세미콜론이 없다. 태그로 경계를 잡는다
+
 ── samples/src/order_load.pc:8~11 [select/read] 규칙=from
         SELECT ORD_NO, TOTAL_AMT
           INTO :ord_no, :amt
@@ -47,6 +60,28 @@ SELECT * FROM IF_ORDER_TMP;    -- IF_ORDER_TMP 는 '읽기'다
 | `INSERT INTO T` / `UPDATE T` / `DELETE FROM T` / `MERGE INTO T` | write |
 | `FROM T` / `JOIN T` / `USING T` | read |
 | 이름만 있고 자리를 못 정함 | **unknown** (‘아니다’가 아니다) |
+
+## 소스 유형
+
+| 확장자 | 언어 | 문장 경계 | 문자열 |
+|---|---|---|---|
+| `.pc` | Pro\*C | 세미콜론 | 지운다 (SQL 은 코드에 박혀 있다) |
+| `.prc` | 프로시저(PL/SQL) | 세미콜론 | 지운다 |
+| `.xml` | UI 쿼리 | **태그** (`<select>…</select>`) | 작은따옴표만 지운다 |
+| `.java` `.js` | | 세미콜론 | **안 지운다** (SQL 이 문자열 안에 있다) |
+
+`config.SOURCE_LANG_BY_SUFFIX` 로 바꾼다. 여기 없는 확장자는 아예 스캔하지
+않는다 — '무엇을 안 보는지'가 명시되어야 결과가 비었을 때 원인을 안다.
+
+### UI 쿼리 XML
+
+SQL 에 세미콜론이 없는 경우가 대부분이라 세미콜론만 찾으면 파일 전체를 한
+덩어리로 물고 온다. 그래서 `<select>` `<insert>` `<update>` `<delete>`
+`<merge>` `<sql>` `<statement>` `<query>` 태그로 경계를 잡는다.
+
+판정 전에는 태그를 지운다. `<select id="...">` 의 `select` 를 SQL 키워드로
+보면 `<update>` 안의 SELECT 를 update 로 잘못 분류한다. `<if test="...">`
+같은 동적 태그도 함께 사라진다.
 
 ## 문장 경계 찾기
 

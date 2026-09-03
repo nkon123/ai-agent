@@ -239,3 +239,12 @@ def test_strip_comments_keeps_strings_by_default():
     """기본 동작은 그대로다 — 주석만 지운다."""
     src = 'char *s = "/* x */";'
     assert strip_comments(src, "c") == src
+
+
+def test_strip_comments_xml():
+    """UI 쿼리 XML 의 주석은 <!-- -->. 태그 사이 SQL 은 남아야 한다."""
+    src = "<select>\n  <!-- IF_T 주석 -->\n  SELECT * FROM IF_T\n</select>"
+    out = strip_comments(src, "xml")
+    assert "주석" not in out
+    assert "SELECT * FROM IF_T" in out and "<select>" in out
+    assert out.count("\n") == src.count("\n")

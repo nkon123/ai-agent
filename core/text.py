@@ -114,6 +114,15 @@ SYNTAX: dict[str, _Syntax] = {
         backslash_escape=True,
     ),
     "shell": _Syntax(line=("#",), quotes=('"', "'"), backslash_escape=True),
+    # UI 쿼리 XML(MyBatis 등). SQL 이 태그 사이 텍스트로 들어 있다.
+    # 주석은 <!-- -->, 문자열은 SQL 리터럴이라 작은따옴표만 본다.
+    # 큰따옴표는 XML 속성값에 쓰여 SQL 문자열이 아니므로 건드리지 않는다.
+    "xml": _Syntax(
+        block=(("<!--", "-->"),),
+        quotes=("'",),
+        backslash_escape=False,
+        doubled_escape=True,
+    ),
 }
 
 

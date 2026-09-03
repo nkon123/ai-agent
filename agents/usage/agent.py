@@ -29,20 +29,14 @@ if str(_ROOT) not in sys.path:
 
 from langgraph.graph import END, START, StateGraph  # noqa: E402
 
-from config import SOURCE_ROOTS, USE_LLM  # noqa: E402
+from config import SOURCE_LANG_BY_SUFFIX, SOURCE_ROOTS, USE_LLM  # noqa: E402
 from core.cache import cached  # noqa: E402
 from core.text import ident_pattern, read_text_with_encoding, strip_comments  # noqa: E402
 
 Detail = Literal["full", "summary", "minimal"]
 
-# 확장자 → strip_comments 가 아는 언어. 여기 없는 확장자는 스캔하지 않는다.
-# '무엇을 안 보는지'가 명시되어야 결과가 비었을 때 원인을 안다.
-LANG_BY_SUFFIX: dict[str, str] = {
-    ".c": "c", ".h": "c", ".cpp": "cpp", ".java": "java", ".cs": "cs",
-    ".js": "js", ".ts": "ts", ".pc": "pro",
-    ".sql": "sql", ".pks": "plsql", ".pkb": "plsql",
-    ".py": "python",
-}
+# 확장자 → 언어. 설정에서 온다(사이트마다 쓰는 확장자가 다르다).
+LANG_BY_SUFFIX = SOURCE_LANG_BY_SUFFIX
 
 # 한 번에 훑을 파일 수 상한. 사내 소스 트리는 크고, 로컬 LLM 이 붙은
 # 요청 하나가 수만 개 파일을 읽기 시작하면 챗봇이 통째로 멎는다.

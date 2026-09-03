@@ -85,6 +85,30 @@ SOURCE_ROOTS: Dict[str, str] = {
     "SAMPLE": _env_str("SOURCE_ROOT_SAMPLE", r"./samples/src"),
 }
 
+# 확장자 → 언어. 소스 스캔(usage)과 SQL 문장 추출(impact)이 함께 쓴다.
+# 여기 없는 확장자는 아예 스캔하지 않는다 — '무엇을 안 보는지'가 명시되어야
+# 결과가 비었을 때 원인을 안다.
+#
+#   pro   : Pro*C (.pc)
+#   plsql : 프로시저 (.prc, .pks, .pkb)
+#   xml   : UI 쿼리 XML — SQL 이 태그 사이 텍스트로 들어 있다
+SOURCE_LANG_BY_SUFFIX: Dict[str, str] = {
+    ".pc": "pro",
+    ".prc": "plsql",
+    ".xml": "xml",
+    ".sql": "sql",
+    ".pks": "plsql",
+    ".pkb": "plsql",
+    ".c": "c",
+    ".h": "c",
+    ".cpp": "cpp",
+    ".java": "java",
+    ".cs": "cs",
+    ".js": "js",
+    ".ts": "ts",
+    ".py": "python",
+}
+
 # --------------------------------------------------------------------------
 # Ollama
 # --------------------------------------------------------------------------
