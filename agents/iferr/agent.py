@@ -436,7 +436,15 @@ def list_mails(hours: int | None = None, detail: Detail = "full") -> dict[str, A
     """
     state = collect({"hours": hours})
     if state.get("rule") == "mail-unavailable":
-        return {"mail_count": 0, "mails": [], "warnings": state.get("warnings") or []}
+        # 실패 경로도 성공 경로와 '같은 모양'이어야 한다.
+        # 키를 빠뜨리면 호출부가 KeyError 로 죽고, 그 에러가 진짜 원인
+        # (Outlook 연결 실패·폴더 못 찾음)을 가려 버린다. 실제로 겪었다.
+        return {
+            "mail_count": 0,
+            "error_count": 0,
+            "mails": [],
+            "warnings": state.get("warnings") or [],
+        }
 
     rows: list[dict[str, Any]] = []
     for m in state.get("mails") or []:
@@ -503,6 +511,21 @@ if __name__ == "__main__":
 
     if args.mails or args.dump:
         r = list_mails(hours=args.hours)
+
+        # 메일을 못 읽었으면 표를 그리기 전에 원인부터 보여 준다.
+        # 빈 표를 먼저 그리면 '오류 메일이 없구나'로 읽힌다.
+        if not r["mails"] and r["warnings"]:
+            print("[메일을 읽지 못했다]")
+            for w in r["warnings"]:
+                print(f"  {w}")
+            print(
+                "\n확인 순서:\n"
+                "  1) python agents/iferr/agent.py --folders   # 폴더 이름 확인\n"
+                "  2) config_local.py 의 MAIL_FOLDER 를 그 경로로\n"
+                "  3) Outlook 이 실행 중인지, pip install pywin32 했는지"
+            )
+            raise SystemExit(1)
+
         print(f"메일 {r['mail_count']}통 (오류로 분류 {r['error_count']}통)\n")
         print(f"{'오류':<5}{'수신시각':<18}{'키':<24}제목")
         print("─" * 90)
@@ -516,12 +539,17 @@ if __name__ == "__main__":
         if args.dump:
             # 본문에는 개인정보가 있을 수 있다. out/ 은 .gitignore 에 있어
             # 커밋되지 않지만, 외부로 보낼 때는 반드시 내용을 확인할 것.
-            from core.outlook import read_mails
+            from core.outlook import MailUnavailable, read_mails
 
             out_dir = _ROOT / "out"
             out_dir.mkdir(exist_ok=True)
             saved = 0
-            for mail in read_mails(since_hours=args.hours):
+            try:
+                mails = read_mails(since_hours=args.hours)
+            except MailUnavailable as e:
+                print(f"[메일을 읽지 못했다] {e}")
+                raise SystemExit(1)
+            for mail in mails:
                 if saved >= args.dump or not is_error_mail(mail):
                     continue
                 path = out_dir / f"mail_{saved + 1}.txt"

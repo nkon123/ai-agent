@@ -338,3 +338,32 @@ def test_combo_and_step_agree(monkeypatch: Any):
     combo = run_iferr(key="IF_ORD_SEND", detail="summary")["cases"][0]
     step = iferr.lookup_key("IF_ORD_SEND", detail="summary")["cases"][0]
     assert combo == step
+
+
+def test_list_mails_failure_has_same_shape(monkeypatch: Any):
+    """실패 경로도 성공 경로와 같은 키를 돌려줘야 한다.
+
+    error_count 를 빠뜨렸더니 호출부가 KeyError 로 죽었고, 그 에러가
+    진짜 원인(Outlook 연결 실패)을 가렸다. 실제로 겪은 사고다.
+    """
+    monkeypatch.setattr(outlook, "MAIL_EML_DIR", "./no/such/dir")
+
+    ok = iferr.list_mails()          # 정상 경로(폴더가 없으니 실패 경로다)
+    monkeypatch.setattr(outlook, "MAIL_EML_DIR", "./samples/mail")
+    good = iferr.list_mails()
+
+    assert set(ok) == set(good), "실패 경로와 성공 경로의 키가 다르다"
+    assert ok["mail_count"] == 0 and ok["error_count"] == 0
+    assert any("메일을 읽지 못했다" in w for w in ok["warnings"])
+
+
+def test_step_tool_survives_mail_failure(monkeypatch: Any):
+    """메일을 못 읽어도 툴이 예외로 죽지 않고 원인을 문자열로 돌려준다."""
+    monkeypatch.setattr(outlook, "MAIL_EML_DIR", "./no/such/dir")
+
+    async def call(c: Client) -> Any:
+        return await c.call_tool("list_error_mails", {"hours": 24})
+
+    r = _run(_with_client(call))
+    text = r.content[0].text
+    assert "확인 필요" in text and "메일을 읽지 못했다" in text
