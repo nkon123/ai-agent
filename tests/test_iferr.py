@@ -519,3 +519,62 @@ def test_bad_regex_does_not_crash(monkeypatch: Any):
     monkeypatch.setattr(iferr, "MAIL_SUBJECT_MATCH", "regex")
     monkeypatch.setattr(iferr, "MAIL_SUBJECT_KEYWORDS", ("(EAA", r"^\(EAA\)"))
     assert "(EAA) Alert Mail - 주문 연계 실패" in _subjects()
+
+
+# --------------------------------------------------------------------------
+# 접두어 기반 키 추출 (IFERR_KEY_PREFIXES)
+# --------------------------------------------------------------------------
+
+
+def _with_prefix(monkeypatch: Any, prefix: str = "ABCIF") -> None:
+    """접두어 패턴만 켠 상태를 만든다."""
+    import re as _re
+
+    pattern = (
+        f"prefix-{prefix.lower()}",
+        rf"(?<![A-Za-z0-9_])({_re.escape(prefix)}[0-9]+)(?![A-Za-z0-9_])",
+    )
+    monkeypatch.setattr(iferr, "_COMPILED", [(pattern[0], _re.compile(pattern[1]))])
+
+
+def test_prefix_pattern_extracts_id(monkeypatch: Any):
+    _with_prefix(monkeypatch)
+    hits = extract_keys("(EAA) Alert Mail - ABCIF0001234 전송 실패")
+    assert [h["key"] for h in hits] == ["ABCIF0001234"]
+    assert hits[0]["rule"] == "prefix-abcif"
+
+
+def test_prefix_pattern_does_not_truncate(monkeypatch: Any):
+    """ABCIF0001234_TMP 에서 숫자를 하나 뱉어 '잘린 키'를 만들면 안 된다.
+
+    뒤쪽 경계에서 숫자를 빼면 정규식이 되돌아가며 ABCIF000123 을 만든다.
+    잘린 키로 DB 를 조회하면 없는 행을 찾거나 엉뚱한 행을 집는다 —
+    못 찾는 것보다 나쁘다.
+    """
+    _with_prefix(monkeypatch)
+    assert extract_keys("대상: ABCIF0001234_TMP 임시테이블") == []
+
+
+def test_prefix_pattern_respects_boundaries(monkeypatch: Any):
+    _with_prefix(monkeypatch)
+    assert extract_keys("xABCIF123") == []          # 앞에 글자가 붙으면 아니다
+    assert [h["key"] for h in extract_keys("[ABCIF777] 오류")] == ["ABCIF777"]
+    assert [h["key"] for h in extract_keys("ABCIF777.")] == ["ABCIF777"]
+
+
+def test_prefix_pattern_needs_digits(monkeypatch: Any):
+    _with_prefix(monkeypatch)
+    assert extract_keys("ABCIF 인터페이스 전반") == []
+
+
+def test_prefix_id_is_found_in_real_mail(monkeypatch: Any):
+    """샘플 메일(08)에서 실제로 뽑히는지."""
+    _with_prefix(monkeypatch)
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_MATCH", "startswith")
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_KEYWORDS", ("(EAA) Alert Mail",))
+
+    rows = {m["subject"]: m for m in iferr.list_mails()["mails"]}
+    mail = rows["(EAA) Alert Mail - ABCIF0001234 전송 실패"]
+    assert mail["is_error"]
+    # 본문의 _TMP 테이블명은 키가 아니다. 중복 없이 하나만 나와야 한다.
+    assert mail["keys"] == ["ABCIF0001234"]

@@ -35,6 +35,7 @@ from langgraph.graph import END, START, StateGraph  # noqa: E402
 
 from config import (  # noqa: E402
     IFERR_KEY_PATTERNS,
+    IFERR_KEY_PREFIXES,
     IFERR_MAX_ROWS,
     IFERR_SQL,
     IFERR_STATUS_COLUMNS,
@@ -608,9 +609,29 @@ if __name__ == "__main__":
                     help="메일 목록만 본다. DB 조회를 하지 않는다")
     ap.add_argument("--dump", type=int, metavar="N", default=0,
                     help="최근 오류 메일 N통의 본문을 out/ 에 저장(정규식 확인용)")
+    ap.add_argument("--test-key", default="", metavar="TEXT",
+                    help="붙여넣은 제목/본문에서 키가 뽑히는지 바로 확인")
     args = ap.parse_args()
 
     # ---- 진단 모드 ---------------------------------------------------------
+    if args.test_key:
+        # 메일함도 DB 도 건드리지 않는다. 패턴만 확인한다.
+        print(f"키 접두어: {', '.join(IFERR_KEY_PREFIXES) or '(없음)'}")
+        print(f"패턴 {len(IFERR_KEY_PATTERNS)}개\n")
+        hits = extract_keys(args.test_key)
+        if not hits:
+            print("키를 찾지 못했다.")
+            print(
+                "  - 접두어 방식이면 config_local.py 에 "
+                'IFERR_KEY_PREFIXES = ("EAIIF",) 처럼 추가\n'
+                "  - 라벨 방식이면 IFERR_KEY_PATTERNS 에 정규식 추가"
+            )
+            raise SystemExit(1)
+        for h in hits:
+            print(f"  {h['key']:<24} (규칙 {h['rule']})")
+            print(f"    근거: {h['evidence']}")
+        raise SystemExit(0)
+
     if args.folders:
         from core.outlook import list_folders
 

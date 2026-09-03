@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from types import ModuleType
 from typing import Any, Dict, Mapping
@@ -168,6 +169,16 @@ MAIL_SUBJECT_STRIP_PREFIXES: tuple[str, ...] = tuple(
 # 메일에서 인터페이스 키를 뽑는 정규식. 그룹 1이 키다.
 # 위에서부터 순서대로 시도하고, 맞는 것이 나오면 그 규칙 이름을 근거로 남긴다.
 # 실제 메일 형식을 확인한 뒤 이 목록만 고치면 된다.
+# 인터페이스 ID 접두어. 여기에 접두어만 적으면 "접두어 + 숫자" 패턴이
+# 자동으로 만들어져 아래 IFERR_KEY_PATTERNS 앞에 붙는다.
+# 정규식을 직접 쓸 필요가 없고, 사내 고유 접두어를 추적되는 파일에 남기지
+# 않아도 된다(config_local.py 는 git 이 추적하지 않는다).
+#
+#     IFERR_KEY_PREFIXES = ("EAIIF",)     → EAIIF0001234 를 키로 뽑는다
+IFERR_KEY_PREFIXES: tuple[str, ...] = tuple(
+    p for p in _env_str("IFERR_KEY_PREFIXES", "").split(",") if p.strip()
+)
+
 IFERR_KEY_PATTERNS: tuple[tuple[str, str], ...] = (
     ("if-id-labeled", r"(?i)\bIF[_\-]?ID\s*[:=]\s*([A-Za-z0-9_\-]{3,40})"),
     ("interface-ko", r"인터페이스\s*(?:ID|아이디|키|번호)\s*[:=]?\s*([A-Za-z0-9_\-]{3,40})"),
@@ -342,6 +353,31 @@ if CONFIG_NORMALIZED:
         file=sys.stderr,
     )
 
+# 접두어로부터 키 패턴을 만든다. 덮어쓰기가 끝난 뒤여야 config_local.py 의
+# 접두어가 반영된다.
+IFERR_KEY_PREFIXES = _as_tuple(IFERR_KEY_PREFIXES)
+if IFERR_KEY_PREFIXES:
+    IFERR_KEY_PATTERNS = (
+        tuple(
+            (
+                f"prefix-{p.lower()}",
+                # 식별자 경계를 직접 정의한다. \b 는 언더스코어를 단어 문자로
+                # 보기 때문에 코드·로그에 섞인 ID 를 놓치거나 잘못 자른다.
+                #
+                # 뒤쪽 경계에 숫자까지 넣는 이유(중요): (?![A-Za-z_]) 로만
+                # 두면 EAIIF0001234_TMP 에서 정규식이 되돌아가며 숫자를
+                # 하나 뱉어 EAIIF000123 으로 '잘린 키'를 만든다. 잘린 키로
+                # DB 를 조회하면 없는 행을 찾거나 엉뚱한 행을 집는다.
+                # 못 찾는 것보다 나쁘다.
+                rf"(?<![A-Za-z0-9_])({re.escape(p)}[0-9]+)(?![A-Za-z0-9_])",
+            )
+            for p in IFERR_KEY_PREFIXES
+        )
+        # 접두어 패턴을 앞에 둔다. 같은 키를 여러 규칙이 잡으면 먼저 걸린
+        # 규칙 이름이 근거로 남으므로, 확실한 쪽이 앞에 와야 한다.
+        + IFERR_KEY_PATTERNS
+    )
+
 # 파생값은 덮어쓰기가 끝난 뒤에 조립한다.
 if not MCP_SERVER_URL:
     MCP_SERVER_URL = f"http://{MCP_HTTP_HOST}:{MCP_HTTP_PORT}/mcp"
@@ -373,6 +409,8 @@ def describe() -> str:
         f"  MAIL         : {MAIL_BACKEND} / "
         + (MAIL_FOLDER or "(기본 받은 편지함)" if MAIL_BACKEND == "com" else MAIL_EML_DIR)
         + f" / 최근 {MAIL_LOOKBACK_HOURS}h",
+        f"  키 접두어     : "
+        + (", ".join(IFERR_KEY_PREFIXES) or "(없음 — 라벨 패턴만 사용)"),
         f"  IFERR_SQL    : "
         + (", ".join(k for k, v in IFERR_SQL.items() if v.strip()) or "(미설정 — 조회 불가)"),
         f"  MCP          : {MCP_PROTOCOL_VERSION} / {MCP_TRANSPORT}"

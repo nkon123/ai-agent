@@ -115,3 +115,14 @@ def test_keyword_setting_is_always_a_tuple():
     """정규화가 실제로 적용되어 있어야 한다."""
     assert isinstance(config.MAIL_SUBJECT_KEYWORDS, tuple)
     assert all(len(k) > 0 for k in config.MAIL_SUBJECT_KEYWORDS)
+
+
+def test_prefix_builds_key_pattern():
+    """접두어만 적으면 패턴이 만들어져야 한다. 정규식을 직접 쓰게 하지 않는다."""
+    import re
+
+    prefix = "ABCIF"
+    pattern = rf"(?<![A-Za-z0-9_])({re.escape(prefix)}[0-9]+)(?![A-Za-z0-9_])"
+    assert re.search(pattern, "키: ABCIF0001234 실패").group(1) == "ABCIF0001234"
+    # 잘린 키를 만들지 않는다.
+    assert re.search(pattern, "ABCIF0001234_TMP") is None

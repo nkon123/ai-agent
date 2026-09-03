@@ -1,0 +1,13 @@
+Subject: (EAA) Alert Mail - ABCIF0001234 =?utf-8?b?7KCE7IahIOyLpO2MqA==?=
+From: eai.noreply@partner.example
+To: erp.admin@corp.example
+Date: Thu, 03 Sep 2026 13:39:44 -0000
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+MIME-Version: 1.0
+
+EAI Alert
+
+인터페이스: ABCIF0001234
+대상: ABCIF0001234_TMP (임시테이블)
+오류: timeout

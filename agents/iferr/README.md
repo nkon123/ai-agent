@@ -57,7 +57,7 @@ python agents\iferr\agent.py --dump 2 --hours 72
 | 메일 0통 | `--hours` 를 늘려 본다. 폴더가 맞는지 확인 |
 | 오류로 분류 안 됨(`.`) | `MAIL_SUBJECT_KEYWORDS` 에 실제 제목의 단어를 추가 |
 | 엉뚱한 메일이 `O` 로 잡힘 | `걸린키워드` 컬럼을 본다. 한 글자(`오`)면 쉼표를 빠뜨린 것 — `("오류",)` 처럼 쉼표를 붙일 것 |
-| 키 `못찾음` | `--dump` 로 본문을 보고 `IFERR_KEY_PATTERNS` 를 맞춘다 |
+| 키 `못찾음` | `--test-key "본문 붙여넣기"` 로 확인하고 `IFERR_KEY_PREFIXES` 를 설정 |
 
 Outlook 없이(개발 PC에서) 확인하려면 `MAIL_BACKEND=eml` 로 `samples/mail/` 을 읽는다.
 
@@ -116,14 +116,45 @@ MAIL_SUBJECT_STRIP_PREFIXES = ("RE:", "FW:", "FWD:", "회신:", "전달:")
 리눅스 개발 PC 나 테스트에서는 `MAIL_BACKEND=eml` 로 `samples/mail/` 의
 `.eml` 파일을 읽는다.
 
-### 2. 키 추출 정규식 (`config.IFERR_KEY_PATTERNS`)
+### 2. 키 추출 (`config_local.py`)
 
-`(규칙이름, 정규식)` 목록이며 **그룹 1이 키**다. 위에서부터 시도하고,
-맞은 규칙 이름이 근거로 남는다. 실제 메일 형식을 보고 이 목록만 고치면 된다.
+ID 가 **"고정 접두어 + 숫자"** 형태면 접두어만 적으면 된다.
+정규식은 경계 처리까지 포함해 자동으로 만들어진다.
 
 ```python
-("if-id-labeled", r"(?i)\bIF[_\-]?ID\s*[:=]\s*([A-Za-z0-9_\-]{3,40})"),
-("interface-ko",  r"인터페이스\s*(?:ID|아이디|키|번호)\s*[:=]?\s*([A-Za-z0-9_\-]{3,40})"),
+IFERR_KEY_PREFIXES = ("EAIIF",)      # EAIIF0001234 를 키로 뽑는다
+```
+
+```
+EAIIF0001234              →  뽑는다
+[EAIIF0009999] 주문 오류   →  뽑는다
+EAIIF0001234_TMP          →  안 뽑는다 (다른 토큰이다)
+xEAIIF123                 →  안 뽑는다
+EAIIF (숫자 없음)          →  안 뽑는다
+```
+
+`_TMP` 가 붙은 경우 **잘린 키(`EAIIF000123`)를 만들지 않는 것**이 중요하다.
+잘린 키로 DB 를 조회하면 없는 행을 찾거나 엉뚱한 행을 집는다 — 못 찾는 것보다 나쁘다.
+
+형태가 다르면 정규식을 직접 넣는다. `(규칙이름, 정규식)` 이며 **그룹 1이 키**다.
+
+```python
+IFERR_KEY_PATTERNS = (
+    ("our-format", r"연계번호\s*[:=]\s*([A-Z0-9]{8,})"),
+)
+```
+
+**바로 확인하는 법** — 메일 제목이나 본문을 붙여넣으면 된다.
+
+```bat
+python agents\iferr\agent.py --test-key "(EAA) Alert Mail - EAIIF0001234 전송 실패"
+```
+```
+키 접두어: EAIIF
+패턴 5개
+
+  EAIIF0001234             (규칙 prefix-eaiif)
+    근거: (EAA) Alert Mail - EAIIF0001234 전송 실패
 ```
 
 ### 3. 조회 SQL (`config.IFERR_SQL`) — **아직 비어 있다**
