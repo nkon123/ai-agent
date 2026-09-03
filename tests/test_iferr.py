@@ -419,19 +419,61 @@ def test_startswith_mode_ignores_mentions_in_the_middle(monkeypatch: Any):
     assert "문의: (EAA) Alert Mail 설정 관련" not in hits
 
 
-def test_startswith_mode_still_catches_forwarded(monkeypatch: Any):
-    """RE:/FW: 가 붙어 전달된 알림도 알림이다. 누락은 오탐보다 나쁘다."""
+def test_forwarded_copy_is_excluded_by_default(monkeypatch: Any):
+    """startswith 는 '문자 그대로 그 문구로 시작'을 뜻한다.
+
+    "RE: FW: (EAA) Alert Mail ..." 은 시스템이 보낸 원본이 아니라 사람이
+    주고받은 사본이라 대개 중복이다. 기본값은 이를 제외한다.
+    """
     monkeypatch.setattr(iferr, "MAIL_SUBJECT_MATCH", "startswith")
     monkeypatch.setattr(iferr, "MAIL_SUBJECT_KEYWORDS", ("(EAA) Alert Mail",))
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_STRIP_PREFIXES", ())
 
-    assert "RE: FW: (EAA) Alert Mail - 재고 연계 실패" in _subjects()
+    hits = _subjects()
+    assert "(EAA) Alert Mail - 주문 연계 실패" in hits
+    assert "RE: FW: (EAA) Alert Mail - 재고 연계 실패" not in hits
 
 
-def test_normalize_subject_strips_repeated_prefixes():
+def test_forwarded_copy_can_be_included_by_config(monkeypatch: Any):
+    """전달분까지 봐야 하면 머리말 목록을 설정한다."""
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_MATCH", "startswith")
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_KEYWORDS", ("(EAA) Alert Mail",))
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_STRIP_PREFIXES", ("RE:", "FW:"))
+
+    rows = {m["subject"]: m for m in iferr.list_mails()["mails"]}
+    fwd = rows["RE: FW: (EAA) Alert Mail - 재고 연계 실패"]
+    assert fwd["is_error"]
+    # 원본이 아니라 사본임이 결과에 드러나야 한다.
+    assert fwd["via_prefix"] is True
+    assert rows["(EAA) Alert Mail - 주문 연계 실패"]["via_prefix"] is False
+
+
+def test_unrelated_forwarded_mail_never_matches(monkeypatch: Any):
+    """머리말 제거를 켜도 '키워드 없는 FW:' 메일이 걸려서는 안 된다."""
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_MATCH", "startswith")
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_KEYWORDS", ("(EAA) Alert Mail",))
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_STRIP_PREFIXES", ("RE:", "FW:"))
+
+    m = outlook.Mail(
+        subject="FW: 전혀 다른 제목", body="", sender="a@b", received=None, source=""
+    )
+    assert iferr.match_info(m) == ("", False)
+
+
+def test_normalize_subject_strips_repeated_prefixes(monkeypatch: Any):
     """머리말이 여러 번 붙는 경우가 있어 한 번만 떼면 부족하다."""
+    monkeypatch.setattr(
+        iferr, "MAIL_SUBJECT_STRIP_PREFIXES", ("RE:", "FW:", "회신:", "전달:")
+    )
     assert iferr.normalize_subject("RE: FW: (EAA) Alert") == "(EAA) Alert"
     assert iferr.normalize_subject("  회신: 전달: 제목  ") == "제목"
     assert iferr.normalize_subject("정상 제목") == "정상 제목"
+
+
+def test_no_stripping_by_default(monkeypatch: Any):
+    """기본 설정에서는 제목을 그대로 쓴다."""
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_STRIP_PREFIXES", ())
+    assert iferr.normalize_subject("RE: 제목") == "RE: 제목"
 
 
 def test_contains_mode_is_still_default(monkeypatch: Any):

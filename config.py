@@ -149,11 +149,17 @@ MAIL_SUBJECT_KEYWORDS: tuple[str, ...] = tuple(
 #   regex      : 정규식으로 비교
 MAIL_SUBJECT_MATCH: str = _env_str("MAIL_SUBJECT_MATCH", "contains")
 
-# 제목 앞에 붙는 회신·전달 머리말. 비교 전에 떼어낸다.
-# 떼지 않으면 "RE: (EAA) Alert Mail ..." 이 startswith 에서 빠진다.
-# 전달된 알림도 알림이다 — 누락은 오탐보다 나쁘다.
+# 제목 앞에 붙는 회신·전달 머리말. 비어 있으면(기본) 떼지 않는다.
+#
+# 기본이 '안 뗌'인 이유: startswith 는 "문자 그대로 그 문구로 시작"을
+# 뜻해야 한다. 머리말을 떼면 "RE: FW: (EAA) Alert Mail ..." 도 걸리는데,
+# 그건 시스템이 보낸 원본 알림이 아니라 사람이 주고받은 사본이라 대개
+# 중복이다. 원본만 보는 편이 집계가 깨끗하다.
+#
+# 전달된 알림까지 잡아야 하면 여기에 머리말을 넣는다.
+#     MAIL_SUBJECT_STRIP_PREFIXES = ("RE:", "FW:", "FWD:", "회신:", "전달:")
 MAIL_SUBJECT_STRIP_PREFIXES: tuple[str, ...] = tuple(
-    _env_str("MAIL_SUBJECT_STRIP_PREFIXES", "RE:,FW:,FWD:,답장:,회신:,전달:").split(",")
+    p for p in _env_str("MAIL_SUBJECT_STRIP_PREFIXES", "").split(",") if p.strip()
 )
 
 # --------------------------------------------------------------------------

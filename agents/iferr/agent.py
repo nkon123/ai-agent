@@ -102,8 +102,10 @@ def normalize_subject(subject: str) -> str:
     """비교용으로 제목을 다듬는다. 회신·전달 머리말을 반복 제거한다.
 
     "RE: FW: (EAA) Alert Mail ..." 처럼 여러 번 붙는 경우가 있어
-    한 번만 떼면 부족하다. 떼지 않으면 startswith 모드에서 전달된 알림이
-    통째로 빠진다 — 누락은 오탐보다 나쁘다.
+    한 번만 떼면 부족하다.
+
+    기본 설정(MAIL_SUBJECT_STRIP_PREFIXES 가 비어 있음)에서는 아무것도
+    떼지 않는다 — startswith 는 '문자 그대로 그 문구로 시작'을 뜻해야 한다.
     """
     s = (subject or "").strip()
     changed = True
@@ -117,20 +119,30 @@ def normalize_subject(subject: str) -> str:
     return s
 
 
-def matched_keyword(mail: Mail) -> str:
-    """제목에 걸린 키워드를 돌려준다. 안 걸리면 빈 문자열.
+def match_info(mail: Mail) -> tuple[str, bool]:
+    """(걸린 키워드, 머리말을 떼고서야 걸렸는가).
 
-    걸린 키워드를 남기는 이유: '왜 이 메일이 오류로 잡혔지'를 결과만
-    보고는 알 수 없다. 판정에는 반드시 근거가 따라와야 한다(규칙 4-6).
-    설정을 잘못 써서 엉뚱한 메일이 걸리는 경우가 실제로 있었다.
-
-    비교 방식은 config.MAIL_SUBJECT_MATCH 로 정한다.
-    대소문자는 어느 모드에서나 무시한다.
+    두 번째 값을 남기는 이유: 머리말 제거를 켜 두면 "RE: FW: ..." 사본도
+    걸리는데, 결과만 보면 원본 알림과 구별되지 않는다. 어느 쪽인지
+    화면에 보여야 '왜 두 건으로 잡혔지'를 바로 안다.
     """
-    subject = normalize_subject(mail.subject)
+    raw = (mail.subject or "").strip()
+    hit = _match_against(raw)
+    if hit:
+        return hit, False
+    if MAIL_SUBJECT_STRIP_PREFIXES:
+        stripped = normalize_subject(raw)
+        if stripped != raw:
+            hit = _match_against(stripped)
+            if hit:
+                return hit, True
+    return "", False
+
+
+def _match_against(subject: str) -> str:
+    """제목 문자열 하나를 키워드들과 비교한다. 대소문자는 무시한다."""
     upper = subject.upper()
     mode = (MAIL_SUBJECT_MATCH or "contains").strip().lower()
-
     for k in MAIL_SUBJECT_KEYWORDS:
         k = k.strip()
         if not k:
@@ -144,12 +156,24 @@ def matched_keyword(mail: Mail) -> str:
                     return k
             except re.error:
                 # 잘못된 정규식을 조용히 넘기면 '오류 메일 없음'으로 보인다.
-                # 여기서는 예외를 던지지 않고 건너뛰되, 설정 점검에서
-                # 걸리도록 check_subject_rule() 이 따로 알려 준다.
+                # 여기서는 건너뛰되 check_subject_rule() 이 따로 알려 준다.
                 continue
         elif upper.find(k.upper()) >= 0:
             return k
     return ""
+
+
+def matched_keyword(mail: Mail) -> str:
+    """제목에 걸린 키워드를 돌려준다. 안 걸리면 빈 문자열.
+
+    걸린 키워드를 남기는 이유: '왜 이 메일이 오류로 잡혔지'를 결과만
+    보고는 알 수 없다. 판정에는 반드시 근거가 따라와야 한다(규칙 4-6).
+    설정을 잘못 써서 엉뚱한 메일이 걸리는 경우가 실제로 있었다.
+
+    비교 방식은 config.MAIL_SUBJECT_MATCH 로 정한다.
+    대소문자는 어느 모드에서나 무시한다.
+    """
+    return match_info(mail)[0]
 
 
 def check_subject_rule() -> list[str]:
@@ -532,7 +556,7 @@ def list_mails(hours: int | None = None, detail: Detail = "full") -> dict[str, A
 
     rows: list[dict[str, Any]] = []
     for m in state.get("mails") or []:
-        hit = matched_keyword(m)
+        hit, via_prefix = match_info(m)
         keys = extract_keys(f"{m.subject}\n{m.body}") if hit else []
         rows.append(
             {
@@ -542,6 +566,8 @@ def list_mails(hours: int | None = None, detail: Detail = "full") -> dict[str, A
                 "is_error": bool(hit),
                 # 어떤 키워드에 걸렸는지 남긴다. 오탐 원인을 여기서 찾는다.
                 "matched": hit,
+                # 머리말(RE:/FW:)을 떼고서야 걸린 사본인가
+                "via_prefix": via_prefix,
                 "keys": [k["key"] for k in keys],
             }
         )
@@ -618,6 +644,10 @@ if __name__ == "__main__":
             f"오류 판정: [{MAIL_SUBJECT_MATCH}] "
             f"{', '.join(MAIL_SUBJECT_KEYWORDS) or '(없음)'}"
         )
+        print(
+            "  머리말 제거: "
+            + (", ".join(MAIL_SUBJECT_STRIP_PREFIXES) or "안 함 (RE:/FW: 사본 제외)")
+        )
         for problem in check_subject_rule():
             print(f"  [설정 확인] {problem}")
         print()
@@ -631,6 +661,8 @@ if __name__ == "__main__":
             # 컬럼 폭을 넘는 값은 잘라 정렬을 유지한다.
             # "(EAA) Alert Mail" 처럼 긴 키워드에서 표가 밀린다.
             hit = m["matched"] or "-"
+            if m.get("via_prefix"):
+                hit += "(전달)"      # 원본이 아니라 사본임을 표시
             hit = hit if len(hit) <= 14 else hit[:13] + "…"
             print(
                 f"{mark}{m['received'][:16]:<18}{hit:<16}"

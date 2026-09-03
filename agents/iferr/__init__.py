@@ -5,6 +5,7 @@ from .agent import (
     extract_keys,
     list_mails,
     lookup_key,
+    match_info,
     matched_keyword,
     run_iferr,
 )
@@ -15,5 +16,6 @@ __all__ = [
     "list_mails",
     "lookup_key",
     "matched_keyword",
+    "match_info",
     "check_subject_rule",
 ]
