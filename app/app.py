@@ -1,16 +1,24 @@
-"""Flask 챗봇 — 등록된 에이전트 툴들을 하나의 대화로 묶는다.
+"""Flask 챗봇 — MCP 서버의 툴들을 하나의 대화로 묶는다.
+
+MCP 스펙 리비전 2026-07-28. 툴은 전부 mcp_server/ 프로세스가 노출하고
+이 앱은 MCP 클라이언트일 뿐이다. 그래서 이 파일은 어떤 툴이 있는지
+알지 못한다 — tools/list 로 받아서 그대로 쓴다.
 
 실행:
-    python app/app.py
-    USE_LLM=false python app/app.py     # Ollama 없이 기동만 확인
+    python app/app.py                       # stdio 로 MCP 서버를 직접 띄운다
+    USE_LLM=false python app/app.py         # Ollama 없이 기동만 확인
+
+    # 서버를 따로 띄워 HTTP 로 붙는 경우
+    MCP_TRANSPORT=streamable-http python -m mcp_server
+    MCP_TRANSPORT=streamable-http python app/app.py
 
 라우트:
-    GET  /            채팅 UI
-    GET  /api/tools   등록된 툴 메타데이터
-    POST /api/chat    {"message": ..., "thread_id": ...}
-    + 각 툴이 제공한 Blueprint (예: /api/echo)
+    GET  /              채팅 UI
+    GET  /api/tools     MCP tools/list 결과 + 프로토콜 정보
+    GET  /api/resource  MCP resources/read 프록시 (화면용 전체 데이터)
+    POST /api/chat      {"message": ..., "thread_id": ...}
 
-새 툴을 붙일 때 이 파일은 수정하지 않는다. app/tools/ 에 파일만 놓으면 된다.
+새 툴을 붙일 때 이 파일은 수정하지 않는다. mcp_server/tools/ 에 파일만 놓으면 된다.
 """
 
 from __future__ import annotations
@@ -19,13 +27,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
-# 저장소 루트를 import 경로에 넣는다. 패키지로 설치하지 않는 배포 방식이라
-# python app/app.py 로 바로 실행할 수 있어야 한다.
 _HERE = Path(__file__).resolve().parent
 _ROOT = _HERE.parent
 # python app/app.py 로 실행하면 sys.path[0] 이 app/ 이 된다. 그러면 이름 app 이
-# 패키지가 아니라 이 파일(app.py)로 해석되어 from app.tools import ... 가 깨진다.
-# 스크립트 디렉터리를 빼고 저장소 루트를 넣어야 한다.
+# 패키지가 아니라 이 파일(app.py)로 해석되어 from app.mcp_bridge import ... 가
+# 깨진다. 스크립트 디렉터리를 빼고 저장소 루트를 넣어야 한다.
 sys.path[:] = [p for p in sys.path if Path(p or ".").resolve() != _HERE]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
@@ -33,13 +39,7 @@ if str(_ROOT) not in sys.path:
 from flask import Flask, jsonify, render_template, request  # noqa: E402
 
 import config  # noqa: E402
-from app.tools import (  # noqa: E402
-    all_tools,
-    blueprints,
-    hints,
-    load_all,
-    specs,
-)
+from app.mcp_bridge import BRIDGE, fill_uri  # noqa: E402
 
 BASE_SYSTEM_PROMPT = """너는 사내 개발자를 돕는 한국어 어시스턴트다.
 
@@ -57,11 +57,6 @@ BASE_SYSTEM_PROMPT = """너는 사내 개발자를 돕는 한국어 어시스턴
 
 app = Flask(__name__)
 
-# 툴 로딩은 import 시점에 한 번. 어떤 툴이 떴는지 로그로 남긴다.
-_LOADED_TOOLS = load_all()
-for _bp in blueprints():
-    app.register_blueprint(_bp)
-
 # 챗 에이전트는 첫 요청 때 만든다(지연 생성).
 # 기동 시점에 만들면 Ollama 가 꺼져 있을 때 서버 자체가 안 뜬다.
 # /api/tools 같은 라우트는 LLM 없이도 살아 있어야 한다.
@@ -78,9 +73,9 @@ def get_agent() -> Any:
 
         _agent = create_agent(
             model=get_llm(model=config.CHAT_MODEL),
-            tools=all_tools(),
+            tools=BRIDGE.tools(),
             system_prompt=BASE_SYSTEM_PROMPT.format(
-                tool_hints=hints() or "(없음)"
+                tool_hints=BRIDGE.hints() or "(없음)"
             ),
             # 체크포인터가 대화 이력을 보관한다. thread_id 별로 분리된다.
             checkpointer=InMemorySaver(),
@@ -108,7 +103,10 @@ def _turn_tool_calls(messages: list[Any]) -> list[dict[str, Any]]:
             args = c.get("args", {})
             # 같은 인자로 같은 툴을 두 번 부르는 경우(모델이 재시도)도
             # 화면에는 한 번만 보여준다.
-            key = (name, repr(sorted(args.items())) if isinstance(args, dict) else repr(args))
+            key = (
+                name,
+                repr(sorted(args.items())) if isinstance(args, dict) else repr(args),
+            )
             if key in seen:
                 continue
             seen.add(key)
@@ -123,7 +121,51 @@ def index():
 
 @app.get("/api/tools")
 def api_tools():
-    return jsonify({"tools": specs()})
+    return jsonify({"mcp": BRIDGE.protocol_info(), "tools": BRIDGE.specs()})
+
+
+@app.get("/api/resource")
+def api_resource():
+    """MCP 리소스 프록시.
+
+    툴은 컨텍스트를 아끼려고 요약만 돌려준다. 화면에 뿌릴 전체 데이터는
+    이 경로로 직접 읽어 간다 — LLM 컨텍스트를 거치지 않는다.
+    툴마다 라우트를 새로 만들 필요가 없어 app.py 가 툴을 몰라도 된다.
+
+    두 가지 형태를 받는다.
+        /api/resource?template=echo://detail/{text}&text=왜 안 되지?   (권장)
+        /api/resource?uri=echo%3A%2F%2Fdetail%2F%25EC%2599%259C...     (직접 조립)
+
+    template 형태를 권장하는 이유:
+        URI 값은 퍼센트 인코딩해야 하는데(값 안의 '?' 가 URI 문법으로
+        해석된다), 그렇게 만든 URI 를 다시 쿼리 파라미터에 실으면
+        '%3F' 의 '%' 가 또 인코딩되어야 한다. 이중 인코딩을 호출부가
+        직접 하다 보면 반드시 틀린다. 템플릿과 값을 따로 받아 서버가
+        조립하면 이 문제가 사라진다.
+    """
+    template = (request.args.get("template") or "").strip()
+    if template:
+        params = {k: v for k, v in request.args.items() if k != "template"}
+        uri = fill_uri(template, **params)
+    else:
+        uri = (request.args.get("uri") or "").strip()
+    if not uri:
+        return jsonify({"error": "template 또는 uri 가 필요하다"}), 400
+    try:
+        return app.response_class(
+            BRIDGE.read_resource(uri), mimetype="application/json"
+        )
+    except Exception as e:
+        msg = f"{type(e).__name__}: {e}"
+        if "Unknown resource" in str(e):
+            # 거의 항상 인코딩 문제다. 값 안의 '?' 나 '/' 가 URI 문법으로
+            # 해석되어 템플릿과 매칭되지 않는다. 증상만 보면 원인을 못 찾으므로
+            # 여기서 알려 준다.
+            msg += (
+                " — URI 값은 퍼센트 인코딩해야 한다. "
+                "template= 과 값들을 따로 넘기면 서버가 조립한다."
+            )
+        return jsonify({"error": msg}), 502
 
 
 @app.post("/api/chat")
@@ -135,12 +177,16 @@ def api_chat():
         return jsonify({"error": "message 가 비어 있다"}), 400
 
     try:
-        result = get_agent().invoke(
-            {"messages": [{"role": "user", "content": message}]},
-            config={"configurable": {"thread_id": thread_id}},
+        # MCP 툴은 코루틴이라 동기 invoke 로는 못 돈다. 브리지 루프에서
+        # ainvoke 를 돌린다(클라이언트 세션이 그 루프에 묶여 있기도 하다).
+        result = BRIDGE.run(
+            get_agent().ainvoke(
+                {"messages": [{"role": "user", "content": message}]},
+                config={"configurable": {"thread_id": thread_id}},
+            )
         )
     except Exception as e:
-        # LLM 이 죽었다는 사실을 감추지 않는다. 화면에 그대로 보여준다.
+        # LLM 이나 MCP 서버가 죽었다는 사실을 감추지 않는다. 화면에 그대로 보여준다.
         return jsonify({"error": f"{type(e).__name__}: {e}"}), 502
 
     messages = result.get("messages", [])
@@ -150,10 +196,15 @@ def api_chat():
             reply = m.content
             break
 
+    # 서버가 사람 확인을 요구해 거절한 건이 있으면 결과에 실어 보낸다.
+    pending = BRIDGE.pending_confirmations[:]
+    BRIDGE.pending_confirmations.clear()
+
     return jsonify(
         {
             "reply": reply,
             "tool_calls": _turn_tool_calls(messages),
+            "needs_confirmation": pending,
             "thread_id": thread_id,
         }
     )
@@ -161,7 +212,17 @@ def api_chat():
 
 def main() -> None:
     print(config.describe())
-    print(f"  등록된 툴  : {', '.join(_LOADED_TOOLS) or '(없음)'}")
+
+    # MCP 서버에 먼저 붙는다. 여기서 실패하면 툴이 하나도 없는 챗봇이 되므로
+    # 조용히 넘기지 않고 원인을 그대로 보여준다.
+    BRIDGE.start()
+    info = BRIDGE.protocol_info()
+    print(
+        f"  MCP 연결   : {info.get('server')} v{info.get('version')} "
+        f"(protocol {info.get('protocol')}, {info.get('transport')})"
+    )
+    names = [s["name"] for s in BRIDGE.specs()]
+    print(f"  등록된 툴  : {', '.join(names) or '(없음)'}")
 
     if config.USE_LLM:
         # 기동을 막지는 않는다. 경고만 하고 뜬다 — 툴 목록 확인 등
@@ -174,7 +235,11 @@ def main() -> None:
         print("  Ollama     : USE_LLM=false — LLM 없이 규칙만 동작")
     print("─" * 60)
 
-    app.run(host=config.HOST, port=config.PORT, debug=config.DEBUG)
+    # 리로더는 프로세스를 두 번 띄운다. stdio 모드에서는 MCP 서버도 두 벌
+    # 뜨고 하나가 고아가 되므로 끈다.
+    app.run(
+        host=config.HOST, port=config.PORT, debug=config.DEBUG, use_reloader=False
+    )
 
 
 if __name__ == "__main__":

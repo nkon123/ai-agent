@@ -16,6 +16,9 @@
           margin-bottom:8px; }
   .tool b { display:block; font-size:13px; }
   .tool span { color:#777; font-size:12px; }
+  .tool em { font-style:normal; font-size:11px; color:#b45309; }
+  #mcp { font-size:11px; color:#999; margin-top:16px; }
+  .warn { background:#fff7e6; border:1px solid #f0d9a8; }
   main { flex:1; display:flex; flex-direction:column; }
   #log { flex:1; overflow-y:auto; padding:20px; }
   .msg { max-width:70ch; margin:0 0 14px; padding:10px 14px; border-radius:8px;
@@ -37,6 +40,7 @@
 <aside>
   <h2>등록된 툴</h2>
   <div id="tools">불러오는 중…</div>
+  <p id="mcp"></p>
 </aside>
 <main>
   <div id="log"></div>
@@ -62,13 +66,21 @@ function add(text, cls) {
 fetch("/api/tools").then(r => r.json()).then(d => {
   const box = document.getElementById("tools");
   box.innerHTML = "";
+  // MCP 로 어느 리비전에 붙었는지 화면에 남긴다. 버전이 어긋나면
+  // 툴이 안 보이는 것부터가 아니라 여기서 먼저 눈에 띈다.
+  if (d.mcp && d.mcp.connected) {
+    document.getElementById("mcp").textContent =
+      "MCP " + d.mcp.protocol + " · " + d.mcp.transport + " · " + d.mcp.server;
+  }
   if (!d.tools.length) { box.textContent = "(없음)"; return; }
   for (const t of d.tools) {
     const el = document.createElement("div");
     el.className = "tool";
-    el.innerHTML = "<b></b><span></span>";
+    el.innerHTML = "<b></b><span></span><em></em>";
     el.querySelector("b").textContent = t.label;
     el.querySelector("span").textContent = t.description || t.name;
+    // 되돌리기 어려운 툴은 눈에 띄게 표시한다.
+    if (t.destructive) el.querySelector("em").textContent = "⚠ 확인 필요 동작";
     box.appendChild(el);
   }
 });
@@ -98,6 +110,13 @@ document.getElementById("f").addEventListener("submit", async (e) => {
         c.className = "calls";
         c.textContent = "사용한 툴: " + d.tool_calls.map(t => t.name).join(", ");
         log.appendChild(c);
+      }
+      // MCP 서버가 사람 확인을 요구해 클라이언트가 거절한 건.
+      // 자동 승인하지 않으므로 사용자에게 그대로 보여 준다.
+      if (d.needs_confirmation && d.needs_confirmation.length) {
+        for (const p of d.needs_confirmation) {
+          add("확인 필요: " + (p.message || "서버가 사용자 확인을 요청했다"), "msg warn");
+        }
       }
     }
   } catch (err) {

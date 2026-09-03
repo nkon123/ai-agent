@@ -85,6 +85,41 @@ ORACLE_PASSWORD: str | None = _env_opt("ORACLE_PASSWORD")
 DB_TIMEOUT_SEC: int = _env_int("DB_TIMEOUT_SEC", 30)
 
 # --------------------------------------------------------------------------
+# MCP (Model Context Protocol) — 스펙 리비전 2026-07-28
+#
+# 툴은 전부 MCP 서버(mcp_server/)가 노출하고, 챗봇은 MCP 클라이언트로 붙는다.
+# 2026-07-28 리비전은 코어가 stateless 라 initialize 핸드셰이크와
+# Mcp-Session-Id 가 없다. 요청 하나가 프로토콜 버전·클라이언트 정보·능력을
+# _meta 에 실어 스스로 완결된다. 그래서 HTTP 모드에서 서버를 여러 벌 띄우고
+# 앞에 로드밸런서를 둬도 세션 고정(sticky session)이 필요 없다.
+# --------------------------------------------------------------------------
+MCP_PROTOCOL_VERSION: str = "2026-07-28"
+
+# stdio | streamable-http
+# stdio 가 기본인 이유: 폐쇄망 단일 장비에서는 포트를 열 이유가 없고,
+# 호스트가 서버 프로세스를 직접 띄우므로 인증 문제도 없다.
+# 에이전트를 다른 장비로 뺄 때만 streamable-http 로 바꾼다.
+MCP_TRANSPORT: str = _env_str("MCP_TRANSPORT", "stdio")
+
+# streamable-http 로 띄울 때 서버가 바인딩할 주소
+MCP_HTTP_HOST: str = _env_str("MCP_HTTP_HOST", "127.0.0.1")
+MCP_HTTP_PORT: int = _env_int("MCP_HTTP_PORT", 8765)
+
+# 클라이언트(챗봇)가 붙을 주소. streamable-http 일 때만 쓴다.
+MCP_SERVER_URL: str = _env_str(
+    "MCP_SERVER_URL", f"http://{MCP_HTTP_HOST}:{MCP_HTTP_PORT}/mcp"
+)
+
+# 툴 한 번 호출의 상한. 로컬 LLM 이 물고 늘어질 때 요청 스레드가
+# 무한정 잡히는 것을 막는다.
+MCP_TOOL_TIMEOUT_SEC: int = _env_int("MCP_TOOL_TIMEOUT_SEC", 120)
+
+# MRTR(Multi Round-Trip Request) 최대 왕복 횟수.
+# 서버가 resultType="input_required" 로 되물으면 클라이언트가 답을 채워
+# 재요청한다. 무한 왕복을 막기 위해 상한을 둔다.
+MCP_INPUT_REQUIRED_MAX_ROUNDS: int = _env_int("MCP_INPUT_REQUIRED_MAX_ROUNDS", 5)
+
+# --------------------------------------------------------------------------
 # 웹 서버
 # --------------------------------------------------------------------------
 HOST: str = _env_str("HOST", "127.0.0.1")
@@ -113,6 +148,8 @@ def describe() -> str:
         f"  ORACLE_USER  : {ORACLE_USER or '(미설정)'}",
         f"  ORACLE_PW    : {'설정됨' if ORACLE_PASSWORD else '(미설정)'}",
         f"  DB_TIMEOUT   : {DB_TIMEOUT_SEC}s",
+        f"  MCP          : {MCP_PROTOCOL_VERSION} / {MCP_TRANSPORT}"
+        + (f" → {MCP_SERVER_URL}" if MCP_TRANSPORT != "stdio" else " (python -m mcp_server)"),
         f"  SERVER       : http://{HOST}:{PORT} (debug={DEBUG})",
         "─" * 60,
     ]

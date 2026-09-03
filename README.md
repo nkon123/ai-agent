@@ -2,8 +2,9 @@
 
 여러 개의 로컬 LLM 에이전트를 한 곳에 모으고, 챗봇 하나로 묶어 쓰는 저장소.
 
-각 에이전트는 **CLI 로 단독 실행**할 수도 있고, **챗봇에 툴로 붙일** 수도 있다.
-소스 형태로 배포한다 (패키징 없음).
+각 에이전트는 **CLI 로 단독 실행**할 수도 있고, **MCP 툴로 챗봇에 붙일** 수도 있다.
+툴 계층은 **MCP 스펙 리비전 `2026-07-28`** 위에 있다 (stateless 코어, MRTR,
+확장 프레임워크). 소스 형태로 배포한다 (패키징 없음).
 
 ---
 
@@ -26,17 +27,37 @@ ollama pull gemma4:e2b
 ## 실행
 
 ```bash
-# 챗봇 서버
+# 챗봇 서버 (MCP 서버를 stdio 로 직접 띄운다)
 python app/app.py                       # → http://127.0.0.1:5000
 
 # Ollama 없이 기동만 확인 (툴 목록·라우트는 살아 있다)
 set USE_LLM=false && python app/app.py
 
-# 에이전트 단독 실행
+# MCP 서버만 단독 실행 (다른 MCP 호스트에 붙일 때)
+python -m mcp_server                    # stdio
+set MCP_TRANSPORT=streamable-http && python -m mcp_server
+
+# 에이전트 단독 실행 (MCP 없이)
 python agents/echo/agent.py "이거 왜 안 되지?"
 
 # 테스트
 pytest -q
+```
+
+### 다른 MCP 호스트에 붙이기
+
+Claude Code, IDE 등 MCP 호스트에서 같은 툴을 그대로 쓸 수 있다.
+
+```json
+{
+  "mcpServers": {
+    "ai-agent": {
+      "command": "python",
+      "args": ["-m", "mcp_server"],
+      "cwd": "C:\\path\\to\\ai-agent"
+    }
+  }
+}
 ```
 
 기동하면 콘솔에 현재 설정과 등록된 툴 목록이 찍힌다. **다른 값이 보이면
@@ -55,18 +76,25 @@ core/
   cache.py          TTL/LRU 캐시
 agents/
   echo/             샘플 에이전트 — 새 에이전트의 템플릿
+mcp_server/         MCP 서버 (툴 계층)
+  __main__.py       python -m mcp_server
+  tools/            MCP 툴 껍데기 + 자동 등록 레지스트리
 app/
-  app.py            Flask 챗봇 (툴 추가 시 수정하지 않는다)
-  tools/            @tool 껍데기 + 자동 등록 레지스트리
+  app.py            Flask 챗봇 = MCP 클라이언트 (툴 추가 시 수정하지 않는다)
+  mcp_bridge.py     MCP 툴 → LangChain 툴 변환
   templates/        채팅 UI
 prompts/            에이전트 생성용 프롬프트 템플릿
-tests/              core/ 회귀 테스트
+tests/              core/ + MCP 회귀 테스트
 ```
 
 | 위치 | 역할 |
 |---|---|
-| `agents/<name>/agent.py` | LangGraph 흐름, `run_xxx()`, CLI |
-| `app/tools/<name>.py` | `@tool` + `register()`. **얇게** |
+| `agents/<name>/agent.py` | LangGraph 흐름, `run_xxx()`, CLI. MCP 를 모른다 |
+| `mcp_server/tools/<name>.py` | MCP 툴/리소스 등록. **얇게** |
+
+에이전트와 챗봇은 **프로세스가 분리**되어 있고 MCP 로만 통신한다.
+덕분에 (1) 다른 MCP 호스트에서도 같은 툴을 쓰고, (2) 에이전트가 죽어도
+챗봇은 살아 있고, (3) 에이전트를 다른 장비로 옮겨도 transport 만 바꾸면 된다.
 
 ---
 
@@ -89,28 +117,40 @@ agents/myagent/
 - 판정 단계를 LangGraph 노드로 나눈다
 - 진입점은 `run_myagent(..., detail="full") -> dict`
 - `if __name__ == "__main__"` 에 CLI 를 둔다
+- **에이전트는 MCP 를 모른다.** `mcp` 를 import 하지 않는다
 
-**3. `app/tools/myagent.py` 를 만든다**
+**3. `mcp_server/tools/myagent.py` 를 만든다**
 
 ```python
-from langchain_core.tools import tool
+import json
 from agents.myagent import run_myagent
-from . import register
+from . import mcp, register
 
-@tool
+@register(label="내 에이전트", view="text",
+          detail_uri="myagent://detail/{arg}",
+          hint="myagent_run 은 ... 할 때만 쓴다.",
+          read_only=True)          # 파괴적이면 destructive=True
 def myagent_run(arg: str) -> str:
     """LLM 이 읽는 설명. 언제 이 툴을 쓰는지 여기에 쓴다."""
     return str(run_myagent(arg, detail="summary"))   # summary!
 
-register(myagent_run, label="내 에이전트", view="text",
-         detail_endpoint="/api/myagent",
-         hint="myagent_run 은 ... 할 때만 쓴다.")
+@mcp.resource("myagent://detail/{arg}", mime_type="application/json")
+def myagent_detail(arg: str) -> str:
+    return json.dumps(run_myagent(arg, detail="full"), ensure_ascii=False)
 ```
 
-**4. 끝.** `app.py` 는 수정하지 않는다. 서버를 다시 띄우면 `/api/tools` 에 나온다.
+**4. 끝.** `app.py` 도 `mcp_server/__main__.py` 도 수정하지 않는다.
+다시 띄우면 `/api/tools` 에 나온다.
 
-전체 데이터를 보여줄 API 가 필요하면 툴 파일 안에서 Flask `Blueprint` 를
-만들어 `register(..., blueprint=bp)` 로 같이 넘긴다.
+전체 데이터는 **MCP 리소스**로 내보낸다. 화면은 프록시로 읽어 간다 —
+툴마다 라우트를 만들 필요가 없다.
+
+```
+GET /api/resource?template=myagent://detail/{arg}&arg=값
+```
+
+`template` 과 값을 따로 넘기면 서버가 퍼센트 인코딩해 조립한다.
+직접 만든 URI 를 `uri=` 로 넘길 수도 있지만 이중 인코딩이 필요하다.
 
 **5. 테스트를 추가하고 `pytest -q` 로 확인한다.**
 
@@ -140,7 +180,18 @@ calling 이 자주 깨지지만 `json_schema` 는 문법을 강제한다.
 ### 에이전트당 툴은 하나만 노출
 
 소형 모델은 툴을 순서대로 여러 개 부르지 못한다. 내부 단계는 일반 함수로
-두고 `@tool` 을 붙이지 않는다. 툴 파일에는 로직을 넣지 않는다.
+두고 등록하지 않는다. 툴 파일에는 로직을 넣지 않는다.
+
+### MCP 메타데이터는 `_meta` 와 annotations 로
+
+`label`/`view`/`hint`/`detail_uri` 는 표준 필드가 아니라 MCP `_meta` 에 실어
+보낸다. 별도 설정 파일을 두면 툴과 메타데이터가 따로 놀다가 어긋난다.
+
+`read_only` / `destructive` 는 **표준 annotations** 다. 우리 챗봇뿐 아니라
+다른 MCP 호스트도 이 힌트를 읽고 확인 절차를 넣는다. 파일 삭제·메일 발송·DML
+처럼 되돌리기 어려운 툴에는 반드시 `destructive=True` 를 줄 것. 클라이언트가
+시스템 프롬프트에 확인 문구를 자동으로 덧붙이고, 서버가 MRTR/elicitation 으로
+사람에게 물으면 **기본적으로 거절**한 뒤 화면에 "확인 필요"로 띄운다.
 
 ### 컨텍스트 절약
 
@@ -194,10 +245,18 @@ LLM 호출 실패나 판정 불가를 조용히 넘기지 말 것. "확인 필�
 | BOM 방치 | utf-8 디코드는 성공하면서 맨 앞에 U+FEFF 를 남긴다 |
 | `num_ctx` 미지정 | 기본 2048 이 프롬프트를 조용히 자른다 |
 | 전체 메시지에서 tool_calls 수집 | 체크포인터의 이전 턴 호출까지 딸려와 중복 표시된다 |
+| stdio 자식에 env 안 넘기기 | SDK 가 PATH 등만 물려줘 MCP 서버가 config 기본값으로 돌아간다. `USE_LLM=false` 인데 서버만 Ollama 를 부른다 |
+| 요청마다 MCP 클라이언트 생성 | stdio 서버 프로세스가 매번 새로 뜬다. 루프 하나를 전용 스레드에 띄우고 재사용한다 |
+| 리소스 URI 값을 인코딩 안 함 | "왜 안 되지?" 의 `?` 가 URI 문법으로 해석돼 `Unknown resource` 가 된다. `template=` 형태로 넘기거나 `mcp_bridge.fill_uri()` 를 쓸 것 |
 
 ---
 
 ## 환경
 
 Python 3.10+ / Windows 사내망(폐쇄망) / Ollama + `gemma4:e2b` (VRAM 6GB) /
-LangGraph + LangChain 1.x / Oracle(`oracledb`, 없어도 나머지는 동작)
+MCP `2026-07-28` (`mcp>=2.1`) / LangGraph + LangChain 1.x /
+Oracle(`oracledb`, 없어도 나머지는 동작)
+
+> `langchain-mcp-adapters` 는 쓰지 않는다 — `mcp<2.0` 을 핀하고 있어
+> 2026-07-28 리비전과 같이 설치할 수 없다. MCP 툴 → LangChain 툴 변환은
+> `app/mcp_bridge.py` 에서 직접 한다(스키마를 그대로 넘기는 수준이라 짧다).

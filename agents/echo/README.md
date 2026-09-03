@@ -33,9 +33,21 @@ USE_LLM=false python agents/echo/agent.py "그냥 문장"   # LLM 없이
 
 | detail | 용도 |
 |---|---|
-| `full` | 화면 표시용 전체 데이터 (`/api/echo`) |
+| `full` | 화면 표시용 전체 데이터 (MCP 리소스 `echo://detail/{text}`) |
 | `summary` | 챗봇 툴이 LLM 에게 돌려주는 값 |
 | `minimal` | 판정 결과만 |
+
+## MCP 노출
+
+`mcp_server/tools/echo.py` 가 이 에이전트를 MCP 로 감싼다.
+**이 에이전트 자체는 MCP 를 모른다** — `mcp` 를 import 하지 않으므로
+MCP 서버 없이 CLI 로 그냥 돈다.
+
+| MCP | 무엇 |
+|---|---|
+| 툴 `echo_classify` | `detail="summary"` — LLM 컨텍스트에 들어간다 |
+| 리소스 `echo://detail/{text}` | `detail="full"` — 컨텍스트 밖, 화면용 |
+| annotations | `readOnly=true`, `destructive=false` |
 
 ## 이 파일에서 눈여겨볼 것
 
