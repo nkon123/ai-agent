@@ -154,3 +154,11 @@ IFERR_MASTER_FIELDS = {
 # SQLTUNE_MAX_ROWS = 100
 # SQLTUNE_TIMEOUT_SEC = 60
 # SQLTUNE_RUNS = 2
+
+# 개선 후보를 만들어 원본과 비교할 것인가 (LLM 호출). CLI 는 --compare.
+# SQLTUNE_COMPARE = False
+# SQLTUNE_CANDIDATES = 2
+
+# 결과 건수까지 비교할 것인가. 원본·후보를 각각 COUNT(*) 로 감싸 실행하므로
+# DB 는 원본만큼 일한다. CLI 는 --count. 켜면 건수가 다른 후보는 탈락한다.
+# SQLTUNE_COMPARE_COUNT = False

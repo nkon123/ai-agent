@@ -301,6 +301,20 @@ SQLTUNE_TIMEOUT_SEC: int = _env_int("SQLTUNE_TIMEOUT_SEC", 60)
 # 실행 반복 횟수. 첫 회는 하드파싱·캐시 적재가 섞여 버린다.
 SQLTUNE_RUNS: int = _env_int("SQLTUNE_RUNS", 2)
 
+# 개선 후보를 만들어 원본과 비교할 것인가.
+# 로컬 모델은 후보 하나 만드는 데 수십 초가 걸려 기본은 꺼 둔다.
+# CLI 는 --compare 로 켠다.
+SQLTUNE_COMPARE: bool = _env_bool("SQLTUNE_COMPARE", False)
+
+# 만들 후보 수 상한.
+SQLTUNE_CANDIDATES: int = _env_int("SQLTUNE_CANDIDATES", 2)
+
+# 결과 건수까지 비교할 것인가.
+# 건수 비교는 원본과 후보를 각각 COUNT(*) 로 감싸 '실행'해야 알 수 있다.
+# DB 는 원본만큼 일하므로 기본은 꺼 둔다. CLI 는 --count 로 켠다.
+# 켜면 건수가 다른 후보는 탈락시킨다 — 건수가 달라지면 튜닝이 아니라 버그다.
+SQLTUNE_COMPARE_COUNT: bool = _env_bool("SQLTUNE_COMPARE_COUNT", False)
+
 # --------------------------------------------------------------------------
 # MCP (Model Context Protocol) — 스펙 리비전 2026-07-28
 #

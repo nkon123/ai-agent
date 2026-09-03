@@ -410,6 +410,22 @@ def _parse_buffers(plan_text: str) -> int | None:
     return None
 
 
+def count_rows(sql: str, timeout: int | None = None) -> int:
+    """쿼리 결과 건수만 센다.
+
+    SELECT COUNT(*) FROM (원본) 으로 감싼다. 행을 전송하지 않으므로 결과를
+    다 받아오는 것보다 가볍지만, DB 는 여전히 원본만큼 일한다 —
+    호출부가 옵션으로 켤 때만 부를 것.
+
+    건수 비교는 튜닝의 전제다. 고친 쿼리가 다른 건수를 내면 그건 튜닝이
+    아니라 버그다.
+    """
+    rows = query(
+        f"SELECT COUNT(*) AS cnt FROM (\n{sql}\n)", timeout=timeout
+    )
+    return int(rows[0]["CNT"]) if rows else 0
+
+
 def existing_indexes(table: str, schema: str | None = None) -> list[dict[str, Any]]:
     """테이블의 기존 인덱스와 컬럼 순서.
 

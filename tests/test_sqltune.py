@@ -252,3 +252,157 @@ def test_buffers_are_parsed_from_plan_text():
     )
     assert oracle._parse_buffers(plan) == 1234
     assert oracle._parse_buffers("(계획 없음)") is None
+
+
+# --------------------------------------------------------------------------
+# 후보 비교 — 건수가 다르면 튜닝이 아니라 버그다
+# --------------------------------------------------------------------------
+
+
+def _fake_db(monkeypatch: Any, measures: dict[str, dict[str, Any]]) -> list[str]:
+    """SQL 조각으로 측정값을 정해 주는 가짜 DB. 호출된 SQL 을 기록한다."""
+    seen: list[str] = []
+    monkeypatch.setattr(sqltune.oracle, "is_configured", lambda: True)
+    monkeypatch.setattr(sqltune.oracle, "existing_indexes", lambda t, schema=None: [])
+
+    def pick(sql: str) -> dict[str, Any]:
+        for key, val in measures.items():
+            if key in sql:
+                return val
+        return {}
+
+    def fake_explain(sql: str, timeout: Any = None):
+        seen.append(f"explain:{sql}")
+        return [{"ID": 0, "OPERATION": "SELECT STATEMENT", "COST": pick(sql).get("cost")}]
+
+    def fake_count(sql: str, timeout: Any = None):
+        seen.append(f"count:{sql}")
+        return pick(sql).get("rows", 0)
+
+    def fake_run(sql: str, binds: Any = None, max_rows: int = 100,
+                 timeout: Any = None, runs: int = 2):
+        seen.append(f"run:{sql}")
+        m = pick(sql)
+        return {"elapsed_sec": m.get("elapsed", 1.0), "buffers": m.get("buffers"),
+                "rows_fetched": 1, "truncated": False, "plan_text": "", "elapsed_all": []}
+
+    monkeypatch.setattr(sqltune.oracle, "explain_plan", fake_explain)
+    monkeypatch.setattr(sqltune.oracle, "count_rows", fake_count)
+    monkeypatch.setattr(sqltune.oracle, "execute_with_stats", fake_run)
+    return seen
+
+
+def _fake_candidates(monkeypatch: Any, cands: list[dict[str, Any]]) -> None:
+    """LLM 후보 생성을 대신한다."""
+
+    def fake_propose(state: Any) -> Any:
+        return {"candidates": cands}
+
+    monkeypatch.setattr(sqltune, "propose", fake_propose)
+    monkeypatch.setattr(sqltune, "_graph", lambda: _rebuild_graph())
+
+
+def _rebuild_graph():
+    """propose 를 갈아끼운 뒤 그래프를 다시 만든다(캐시 우회)."""
+    from langgraph.graph import END, START, StateGraph
+
+    g = StateGraph(sqltune.TuneState)
+    for name, fn in (
+        ("guard", sqltune.guard), ("static_check", sqltune.static_check),
+        ("plan_check", sqltune.plan_check), ("index_check", sqltune.index_check),
+        ("run_check", sqltune.run_check), ("propose", sqltune.propose),
+        ("compare", sqltune.compare),
+    ):
+        g.add_node(name, fn)
+    g.add_edge(START, "guard")
+    for a, b in (("guard", "static_check"), ("static_check", "plan_check"),
+                 ("plan_check", "index_check"), ("index_check", "run_check"),
+                 ("run_check", "propose"), ("propose", "compare")):
+        g.add_edge(a, b)
+    g.add_edge("compare", END)
+    return g.compile()
+
+
+def test_candidate_with_different_row_count_is_rejected(monkeypatch: Any):
+    """건수가 달라지면 튜닝이 아니라 버그다. 순위에 넣지 않는다."""
+    base = "SELECT a FROM ORD_HDR WHERE STATUS = 'Y'"
+    bad = "SELECT a FROM ORD_HDR WHERE STATUS = 'Y' AND ROWNUM <= 10"
+    _fake_db(monkeypatch, {
+        "ROWNUM": {"cost": 5, "rows": 10, "buffers": 10},
+        "ORD_HDR": {"cost": 100, "rows": 1204, "buffers": 5000},
+    })
+    _fake_candidates(monkeypatch, [{"name": "후보1", "sql": bad, "reason": "제한",
+                                    "based_on": []}])
+
+    r = run_sqltune(base, compare_candidates=True, compare_count=True, detail="full")
+    cand = [c for c in r["comparison"] if c["name"] == "후보1"][0]
+    assert "결과 건수가 다르다" in cand["rejected"]
+    assert "1204" in cand["rejected"] and "10" in cand["rejected"]
+    assert r["best"] == "원본"          # 건수가 다른 후보가 이기면 안 된다
+
+
+def test_candidate_with_same_count_and_fewer_buffers_wins(monkeypatch: Any):
+    """건수가 같고 논리적 읽기가 적으면 후보가 이긴다."""
+    base = "SELECT a FROM ORD_HDR WHERE TO_CHAR(REG_DT,'YYYYMMDD') = '20260101'"
+    good = "SELECT a FROM ORD_HDR WHERE REG_DT >= :d1 AND REG_DT < :d2"
+    _fake_db(monkeypatch, {
+        "TO_CHAR": {"cost": 900, "rows": 1204, "buffers": 50000, "elapsed": 3.0},
+        "REG_DT >=": {"cost": 12, "rows": 1204, "buffers": 220, "elapsed": 0.2},
+    })
+    _fake_candidates(monkeypatch, [{"name": "후보1", "sql": good,
+                                    "reason": "함수 제거", "based_on": ["func-on-column"]}])
+
+    r = run_sqltune(base, execute=True, compare_candidates=True, compare_count=True,
+                    detail="summary")
+    assert r["best"] == "후보1"
+    by = {c["name"]: c for c in r["compared"]}
+    assert by["원본"]["rows"] == by["후보1"]["rows"] == 1204
+    assert by["후보1"]["buffers"] < by["원본"]["buffers"]
+
+
+def test_unsafe_candidate_is_rejected(monkeypatch: Any):
+    """LLM 이 만든 SQL 도 원본과 같은 안전 게이트를 통과해야 한다."""
+    _fake_db(monkeypatch, {"ORD_HDR": {"cost": 10, "rows": 1, "buffers": 1}})
+    _fake_candidates(monkeypatch, [
+        {"name": "후보1", "sql": "DELETE FROM ORD_HDR", "reason": "?", "based_on": []}
+    ])
+
+    r = run_sqltune("SELECT a FROM ORD_HDR", compare_candidates=True, detail="full")
+    cand = [c for c in r["comparison"] if c["name"] == "후보1"][0]
+    assert "안전 검사 탈락" in cand["rejected"]
+    # 거부된 후보는 실행도 측정도 하지 않는다.
+    assert cand.get("cost") is None
+
+
+def test_count_off_warns_that_results_are_unverified(monkeypatch: Any):
+    """건수를 안 봤으면 '같은 결과'라는 보장이 없다는 사실을 남긴다."""
+    _fake_db(monkeypatch, {"ORD_HDR": {"cost": 10, "buffers": 100}})
+    _fake_candidates(monkeypatch, [
+        {"name": "후보1", "sql": "SELECT a FROM ORD_HDR WHERE 1=1", "reason": "x",
+         "based_on": []}
+    ])
+
+    r = run_sqltune("SELECT a FROM ORD_HDR", compare_candidates=True,
+                    compare_count=False, detail="summary")
+    assert any("결과 건수를 비교하지 않았다" in w for w in r["warnings"])
+
+
+def test_count_is_not_run_when_option_is_off(monkeypatch: Any):
+    """옵션이 꺼져 있으면 COUNT(*) 를 실행하지 않는다 — 실행은 DB 부하다."""
+    seen = _fake_db(monkeypatch, {"ORD_HDR": {"cost": 10, "buffers": 100}})
+    _fake_candidates(monkeypatch, [
+        {"name": "후보1", "sql": "SELECT a FROM ORD_HDR WHERE 1=1", "reason": "x",
+         "based_on": []}
+    ])
+
+    run_sqltune("SELECT a FROM ORD_HDR", compare_candidates=True, compare_count=False)
+    assert not any(c.startswith("count:") for c in seen)
+    assert not any(c.startswith("run:") for c in seen)
+
+
+def test_compare_is_off_by_default(monkeypatch: Any):
+    """후보 생성은 로컬 모델에서 수십 초가 걸린다. 기본은 꺼 둔다."""
+    seen = _fake_db(monkeypatch, {"ORD_HDR": {"cost": 10}})
+    r = run_sqltune("SELECT a FROM ORD_HDR", detail="full")
+    assert r["comparison"] == []
+    assert not any(c.startswith("count:") for c in seen)

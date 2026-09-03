@@ -31,6 +31,9 @@ if str(_ROOT) not in sys.path:
 from langgraph.graph import END, START, StateGraph  # noqa: E402
 
 from config import (  # noqa: E402
+    SQLTUNE_CANDIDATES,
+    SQLTUNE_COMPARE,
+    SQLTUNE_COMPARE_COUNT,
     SQLTUNE_EXECUTE,
     SQLTUNE_MAX_ROWS,
     SQLTUNE_RULES_FILE,
@@ -350,6 +353,11 @@ def _main_table(sql: str) -> str:
 class TuneState(TypedDict, total=False):
     sql: str
     execute: bool
+    compare: bool
+    compare_count: bool
+    candidates: list[dict[str, Any]]
+    comparison: list[dict[str, Any]]
+    best: str
     safe: bool
     findings: list[dict[str, str]]
     plan: list[dict[str, Any]]
@@ -458,38 +466,172 @@ def run_check(state: TuneState) -> TuneState:
 
 
 def propose(state: TuneState) -> TuneState:
-    """LLM 에게 기준 문서를 주고 개선안을 받는다.
+    """LLM 에게 기준 문서를 주고 개선 후보를 받는다.
 
-    LLM 이 규칙 판정을 뒤집지 않는다. 규칙이 찾은 문제를 근거로, 고친
-    쿼리를 '초안'으로 만들 뿐이다. 실행은 사람이 판단한다.
+    LLM 이 규칙 판정을 뒤집지 않는다. 규칙이 찾은 문제를 근거로 고친
+    쿼리를 '후보'로 낼 뿐이고, 좋아졌는지는 플랜과 건수가 정한다.
+
+    구조화 출력(json_schema)을 쓰는 이유: 답변 문장에서 SQL 을 뽑아내려면
+    파싱이 필요하고, 소형 모델은 그 형식을 자주 어긴다. 스키마를 강제하면
+    문법이 어긋난 JSON 이 나올 수 없다.
     """
-    if not state.get("safe") or not USE_LLM:
+    if not state.get("safe") or not USE_LLM or not state.get("compare"):
         return {}
 
     warnings = list(state.get("warnings") or [])
     findings = state.get("findings") or []
     try:
-        from core.llm import get_llm
+        from pydantic import BaseModel, Field
+
+        from core.llm import get_structured_llm
+
+        class Candidate(BaseModel):
+            sql: str = Field(description="고친 SELECT 쿼리 전문")
+            reason: str = Field(description="무엇을 왜 고쳤는지 한두 문장")
+            rules: list[str] = Field(
+                default_factory=list, description="근거로 삼은 규칙명"
+            )
+
+        class Candidates(BaseModel):
+            candidates: list[Candidate] = Field(description="개선 후보 목록")
 
         rules = load_rules(SQLTUNE_RULES_FILE)
-        issues = "\n".join(f"- {f['rule']}: {f['note']} (근거: {f['evidence']})"
-                           for f in findings) or "- (규칙이 찾은 문제 없음)"
+        issues = "\n".join(
+            f"- {f['rule']}: {f['note']} (근거: {f['evidence']})" for f in findings
+        ) or "- (규칙이 찾은 문제 없음)"
         prompt = (
             "너는 오라클 SQL 튜닝을 돕는다. 아래 '튜닝 기준'에 있는 항목만 근거로 삼아라.\n"
-            "기준에 없는 내용을 지어내지 마라. 결과 건수가 달라지는 변경은 하지 마라.\n\n"
+            "기준에 없는 내용을 지어내지 마라.\n"
+            "**결과 건수와 결과 값이 달라지는 변경은 절대 하지 마라.** 건수가 달라지면\n"
+            "튜닝이 아니라 버그다. SELECT 문만 만들어라.\n"
+            f"후보는 최대 {SQLTUNE_CANDIDATES}개까지.\n\n"
             f"[튜닝 기준]\n{rules[:6000]}\n\n"
             f"[규칙이 찾은 문제]\n{issues}\n\n"
-            f"[원본 쿼리]\n{state['sql'][:3000]}\n\n"
-            "고친 쿼리와 그렇게 고친 이유를 기준의 규칙명과 함께 간단히 답해라."
+            f"[원본 쿼리]\n{state['sql'][:3000]}\n"
         )
-        answer = str(get_llm().invoke(prompt).content).strip()
-        return {
-            "proposal": {"text": answer, "based_on": [f["rule"] for f in findings]},
-            "warnings": warnings,
-        }
+        out = get_structured_llm(Candidates).invoke(prompt)
+        cands: list[dict[str, Any]] = []
+        for i, c in enumerate(out.candidates[:SQLTUNE_CANDIDATES], start=1):
+            cands.append(
+                {
+                    "name": f"후보{i}",
+                    "sql": c.sql.strip(),
+                    "reason": c.reason.strip(),
+                    "based_on": list(c.rules or []),
+                }
+            )
+        if not cands:
+            warnings.append("LLM 이 개선 후보를 내지 못했다 — 확인 필요")
+        return {"candidates": cands, "warnings": warnings}
     except Exception as e:
-        warnings.append(f"LLM 개선안 생성 실패 — 확인 필요: {type(e).__name__}: {e}")
+        warnings.append(f"개선 후보 생성 실패 — 확인 필요: {type(e).__name__}: {e}")
         return {"warnings": warnings}
+
+
+def _measure(sql: str, want_count: bool, want_run: bool) -> dict[str, Any]:
+    """쿼리 하나를 재 본다. 실패는 사유로 남긴다(예외로 죽지 않는다)."""
+    out: dict[str, Any] = {"cost": None, "rows": None, "elapsed_sec": None,
+                           "buffers": None, "errors": []}
+    clean = strip_trailing_semicolon(sql)
+    try:
+        plan = oracle.explain_plan(clean)
+        out["plan_rows"] = len(plan)
+        # 루트(ID 0)의 Cost 가 옵티마이저 추정 비용이다.
+        for row in plan:
+            if row.get("ID") == 0:
+                out["cost"] = row.get("COST")
+                break
+    except Exception as e:
+        out["errors"].append(f"explain: {type(e).__name__}: {e}")
+
+    if want_count:
+        try:
+            out["rows"] = oracle.count_rows(clean, timeout=SQLTUNE_TIMEOUT_SEC)
+        except Exception as e:
+            out["errors"].append(f"count: {type(e).__name__}: {e}")
+
+    if want_run:
+        try:
+            r = oracle.execute_with_stats(
+                clean, max_rows=SQLTUNE_MAX_ROWS,
+                timeout=SQLTUNE_TIMEOUT_SEC, runs=SQLTUNE_RUNS,
+            )
+            out["elapsed_sec"] = r["elapsed_sec"]
+            out["buffers"] = r["buffers"]
+            out["truncated"] = r.get("truncated")
+        except Exception as e:
+            out["errors"].append(f"run: {type(e).__name__}: {e}")
+    return out
+
+
+def _score(entry: dict[str, Any]) -> tuple[float, float, float]:
+    """비교 순서: Buffers → 수행시간 → Cost (기준 문서 8항).
+
+    Buffers 를 먼저 보는 이유: 수행 시간은 캐시·부하에 흔들려 같은 쿼리도
+    실행마다 다르지만 논리적 읽기는 재현된다. Cost 는 추정치라 마지막이다.
+    """
+    big = float("inf")
+    return (
+        float(entry.get("buffers") if entry.get("buffers") is not None else big),
+        float(entry.get("elapsed_sec") if entry.get("elapsed_sec") is not None else big),
+        float(entry.get("cost") if entry.get("cost") is not None else big),
+    )
+
+
+def compare(state: TuneState) -> TuneState:
+    """원본과 후보들을 같은 기준으로 재고 순위를 매긴다.
+
+    후보는 원본과 똑같은 안전 게이트를 통과해야 한다. LLM 이 만든 SQL 도
+    사용자 입력과 다를 바 없다.
+    """
+    if not state.get("safe") or not state.get("compare"):
+        return {}
+
+    warnings = list(state.get("warnings") or [])
+    if not oracle.is_configured():
+        warnings.append("Oracle 설정이 비어 있어 후보를 비교하지 못했다 — 확인 필요")
+        return {"warnings": warnings}
+
+    want_count = bool(state.get("compare_count"))
+    want_run = bool(state.get("execute"))
+
+    baseline = {"name": "원본", "sql": state["sql"], "reason": "", "based_on": [],
+                **_measure(state["sql"], want_count, want_run)}
+    rows = [baseline]
+
+    for cand in state.get("candidates") or []:
+        ok, why = is_safe_select(cand["sql"])
+        if not ok:
+            # LLM 이 만든 SQL 도 그대로 믿지 않는다.
+            rows.append({**cand, "rejected": f"안전 검사 탈락: {why}", "errors": []})
+            warnings.append(f"{cand['name']} 안전 검사 탈락 — {why}")
+            continue
+
+        measured = {**cand, **_measure(cand["sql"], want_count, want_run)}
+
+        if want_count and baseline.get("rows") is not None:
+            if measured.get("rows") is None:
+                measured["rejected"] = "건수를 세지 못했다"
+            elif measured["rows"] != baseline["rows"]:
+                # 건수가 달라지면 튜닝이 아니라 버그다. 조용히 순위에 넣지 않는다.
+                measured["rejected"] = (
+                    f"결과 건수가 다르다 (원본 {baseline['rows']}건 → "
+                    f"{measured['rows']}건) — 튜닝이 아니라 버그다"
+                )
+                warnings.append(f"{cand['name']} {measured['rejected']}")
+        rows.append(measured)
+
+    ranked = [r for r in rows if not r.get("rejected") and not r.get("errors")]
+    ranked.sort(key=_score)
+    best = ranked[0]["name"] if ranked else ""
+
+    if not want_count and state.get("candidates"):
+        # 건수를 안 봤으면 '같은 결과'라는 보장이 없다. 그 사실을 남긴다.
+        warnings.append(
+            "결과 건수를 비교하지 않았다 — 후보가 같은 결과를 내는지 확인할 것 "
+            "(--count 로 켤 수 있다)"
+        )
+    return {"comparison": rows, "best": best, "warnings": warnings}
 
 
 @cached(ttl=3600, maxsize=1, key=lambda: "graph")
@@ -497,7 +639,8 @@ def _graph():
     g = StateGraph(TuneState)
     for name, fn in (
         ("guard", guard), ("static_check", static_check), ("plan_check", plan_check),
-        ("index_check", index_check), ("run_check", run_check), ("propose", propose),
+        ("index_check", index_check), ("run_check", run_check),
+        ("propose", propose), ("compare", compare),
     ):
         g.add_node(name, fn)
     g.add_edge(START, "guard")
@@ -506,12 +649,17 @@ def _graph():
     g.add_edge("plan_check", "index_check")
     g.add_edge("index_check", "run_check")
     g.add_edge("run_check", "propose")
-    g.add_edge("propose", END)
+    g.add_edge("propose", "compare")
+    g.add_edge("compare", END)
     return g.compile()
 
 
 def run_sqltune(
-    sql: str, execute: bool | None = None, detail: Detail = "full"
+    sql: str,
+    execute: bool | None = None,
+    compare_candidates: bool | None = None,
+    compare_count: bool | None = None,
+    detail: Detail = "full",
 ) -> dict[str, Any]:
     """진입점.
 
@@ -519,12 +667,19 @@ def run_sqltune(
         summary : 문제 목록과 인덱스 제안 (LLM 컨텍스트에 들어간다)
         minimal : 건수만
 
-    execute: 실제 수행 여부. None 이면 config.SQLTUNE_EXECUTE 를 따른다.
+    execute            : 실제 수행 여부 (None 이면 config.SQLTUNE_EXECUTE)
+    compare_candidates : 개선 후보를 만들어 비교 (None 이면 config.SQLTUNE_COMPARE)
+    compare_count      : 결과 건수까지 비교 (None 이면 config.SQLTUNE_COMPARE_COUNT).
+                         건수 비교는 원본·후보를 각각 COUNT(*)로 감싸 실행한다.
     """
+    want_count = SQLTUNE_COMPARE_COUNT if compare_count is None else bool(compare_count)
     state: TuneState = _graph().invoke(
         {
             "sql": sql,
             "execute": SQLTUNE_EXECUTE if execute is None else bool(execute),
+            "compare": SQLTUNE_COMPARE if compare_candidates is None
+            else bool(compare_candidates),
+            "compare_count": want_count,
         }
     )
     findings = state.get("findings") or []
@@ -548,7 +703,19 @@ def run_sqltune(
         "elapsed_sec": (state.get("run") or {}).get("elapsed_sec"),
         "buffers": (state.get("run") or {}).get("buffers"),
         "plan_rows": len(state.get("plan") or []),
-        "proposal": (state.get("proposal") or {}).get("text", ""),
+        "best": state.get("best", ""),
+        "compared": [
+            {
+                "name": c["name"],
+                "cost": c.get("cost"),
+                "rows": c.get("rows"),
+                "elapsed_sec": c.get("elapsed_sec"),
+                "buffers": c.get("buffers"),
+                "rejected": c.get("rejected", ""),
+                "reason": c.get("reason", ""),
+            }
+            for c in (state.get("comparison") or [])
+        ],
     }
     if detail == "summary":
         return summary
@@ -559,6 +726,8 @@ def run_sqltune(
         "plan": state.get("plan") or [],
         "existing_indexes": index.get("existing") or [],
         "run": state.get("run") or {},
+        "candidates": state.get("candidates") or [],
+        "comparison": state.get("comparison") or [],
     }
 
 
@@ -587,12 +756,23 @@ if __name__ == "__main__":
     src.add_argument("-f", "--file", help="쿼리 파일 (.sql)")
     ap.add_argument("--run", action="store_true",
                     help="실제로 수행해 시간·실제계획까지 비교 (운영 DB 부하 주의)")
+    ap.add_argument("--compare", action="store_true",
+                    help="LLM 개선 후보를 만들어 원본과 플랜을 비교")
+    ap.add_argument("--count", action="store_true",
+                    help="결과 건수까지 비교 (원본·후보를 COUNT(*)로 감싸 실행)")
     ap.add_argument("--detail", choices=["full", "summary", "minimal"], default="full")
     ap.add_argument("--json", action="store_true", help="JSON 으로 출력")
     args = ap.parse_args()
 
     sql = args.query if args.query else read_text(args.file)
-    result = run_sqltune(sql, execute=args.run, detail=args.detail)
+    result = run_sqltune(
+        sql,
+        execute=args.run,
+        # --count 는 후보 비교의 일부다. 따로 켜면 비교도 함께 켠다.
+        compare_candidates=args.compare or args.count,
+        compare_count=args.count,
+        detail=args.detail,
+    )
 
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
@@ -626,8 +806,27 @@ if __name__ == "__main__":
         if run.get("plan_text"):
             print(run["plan_text"][:2000])
 
-    if result.get("proposal"):
-        print(f"\n[LLM 개선안]\n{result['proposal']}")
+    comparison = result.get("comparison") or []
+    if comparison:
+        print("\n[후보 비교]")
+        print(f"  {'후보':<8}{'Cost':>8}{'건수':>10}{'시간(초)':>10}{'Buffers':>10}  비고")
+        print("  " + "─" * 76)
+        for c in comparison:
+            note = c.get("rejected") or c.get("reason", "")
+            elapsed = c.get("elapsed_sec")
+            elapsed_s = f"{elapsed:.3f}" if elapsed is not None else "-"
+            rows = c.get("rows")
+            print(
+                f"  {c['name']:<8}{str(c.get('cost') or '-'):>8}"
+                f"{str(rows if rows is not None else '-'):>10}"
+                f"{elapsed_s:>10}{str(c.get('buffers') or '-'):>10}  {note[:40]}"
+            )
+        if result.get("best"):
+            print(f"\n  → 가장 나은 것: {result['best']}")
+        for c in comparison:
+            if c.get("sql") and c["name"] != "원본" and not c.get("rejected"):
+                print(f"\n  [{c['name']}] {c.get('reason','')}")
+                print("  " + c["sql"].replace("\n", "\n  "))
 
     for w in result.get("warnings", []):
         print(f"\n[확인 필요] {w}")
