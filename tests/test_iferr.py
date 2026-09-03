@@ -119,27 +119,28 @@ def test_mail_unavailable_is_not_no_error(monkeypatch: Any):
 # --------------------------------------------------------------------------
 
 
-def test_unconfigured_db_is_unknown_not_ok():
-    """DB 미설정은 '영향 없음'이 아니라 '확인 불가'다.
-
-    기본 SQL(IF_MST 조회)은 있으므로 여기서 걸리는 것은 접속 설정이다.
-    """
-    r = run_iferr(detail="full")
-    for c in r["cases"]:
-        assert c["db"]["status"] == "unknown"
-        assert c["rule"] == "db-not-configured"
-        assert c["impact"] == "확인 불가"
-    assert any("Oracle 설정이 비어 있다" in w for w in r["warnings"])
-
-
-def test_unconfigured_sql_is_unknown_not_ok(monkeypatch: Any):
-    """SQL 을 다 비워도 '확인 불가'다."""
-    monkeypatch.setattr(iferr, "IFERR_SQL", {"header": "", "detail": "", "impact": ""})
+def test_unconfigured_sql_is_unknown_not_ok():
+    """마스터 테이블을 안 정했으면 '영향 없음'이 아니라 '확인 불가'다."""
     r = run_iferr(detail="full")
     for c in r["cases"]:
         assert c["db"]["status"] == "unknown"
         assert c["rule"] == "sql-not-configured"
-    assert any("조회 SQL 이 설정되지 않았다" in w for w in r["warnings"])
+        assert c["impact"] == "확인 불가"
+    assert any("IFERR_MASTER_TABLE" in w for w in r["warnings"])
+
+
+def test_unconfigured_db_is_unknown_not_ok(monkeypatch: Any):
+    """SQL 은 있는데 접속 설정이 없으면 그것도 '확인 불가'다."""
+    monkeypatch.setattr(
+        iferr,
+        "IFERR_SQL",
+        {"header": "SELECT 1 FROM dual WHERE :if_key IS NOT NULL", "detail": "",
+         "impact": ""},
+    )
+    r = run_iferr(detail="full")
+    for c in r["cases"]:
+        assert c["rule"] == "db-not-configured"
+    assert any("Oracle 설정이 비어 있다" in w for w in r["warnings"])
 
 
 def _fake_db(monkeypatch: Any, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -758,6 +759,30 @@ def _fake_master(monkeypatch: Any, rows: list[dict[str, Any]]) -> list[dict[str,
     """IF_MST 조회를 흉내 낸다."""
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(iferr.oracle, "is_configured", lambda: True)
+    # 마스터 테이블 이름은 설정에서 온다. 테스트는 그 설정을 흉내 낸다.
+    monkeypatch.setattr(
+        iferr,
+        "IFERR_SQL",
+        {
+            "header": config.build_master_sql(
+                "IF_MST",
+                {
+                    "id": "IFID", "src_sys": "SRCSYS", "tar_sys": "TARSYS",
+                    "src_table": "SRCTNAME", "tar_table": "TARTNAME",
+                },
+            ),
+            "detail": "",
+            "impact": "",
+        },
+    )
+    monkeypatch.setattr(
+        iferr,
+        "IFERR_MASTER_FIELDS",
+        {
+            "id": "IFID", "src_sys": "SRCSYS", "tar_sys": "TARSYS",
+            "src_table": "SRCTNAME", "tar_table": "TARTNAME",
+        },
+    )
 
     def fake_query(sql: str, binds: Any = None, timeout: Any = None):
         calls.append({"sql": sql, "binds": binds})
@@ -803,17 +828,6 @@ def test_master_lookup_uses_bind(monkeypatch: Any):
 
 def test_master_field_names_are_configurable(monkeypatch: Any):
     """사이트마다 컬럼 이름이 다를 수 있다."""
-    monkeypatch.setattr(
-        iferr,
-        "IFERR_MASTER_FIELDS",
-        {
-            "id": "INTERFACE_ID",
-            "src_sys": "FROM_SYS",
-            "tar_sys": "TO_SYS",
-            "src_table": "FROM_TAB",
-            "tar_table": "TO_TAB",
-        },
-    )
     _fake_master(
         monkeypatch,
         [
@@ -825,6 +839,17 @@ def test_master_field_names_are_configurable(monkeypatch: Any):
                 "TO_TAB": "T2",
             }
         ],
+    )
+    monkeypatch.setattr(
+        iferr,
+        "IFERR_MASTER_FIELDS",
+        {
+            "id": "INTERFACE_ID",
+            "src_sys": "FROM_SYS",
+            "tar_sys": "TO_SYS",
+            "src_table": "FROM_TAB",
+            "tar_table": "TO_TAB",
+        },
     )
     c = run_iferr(key="X1", detail="full")["cases"][0]
     assert "MES.T1 → ERP.T2" in c["impact"]

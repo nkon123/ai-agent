@@ -126,3 +126,41 @@ def test_prefix_builds_key_pattern():
     assert re.search(pattern, "키: ABCIF0001234 실패").group(1) == "ABCIF0001234"
     # 잘린 키를 만들지 않는다.
     assert re.search(pattern, "ABCIF0001234_TMP") is None
+
+
+def test_build_master_sql_from_names():
+    """테이블·컬럼 이름만으로 SQL 이 만들어져야 한다. SQL 을 쓰게 하지 않는다."""
+    sql = config.build_master_sql(
+        "if_mst",
+        {
+            "id": "IFID",
+            "src_sys": "SRCSYS",
+            "tar_sys": "TARSYS",
+            "src_table": "SRCTNAME",
+            "tar_table": "TARTNAME",
+        },
+    )
+    assert "SELECT IFID, SRCSYS, TARSYS, SRCTNAME, TARTNAME" in sql
+    assert "FROM {schema}IF_MST" in sql
+    assert "WHERE IFID = :if_key" in sql
+
+
+def test_build_master_sql_skips_empty_fields():
+    """사이트마다 있는 컬럼이 다르다. 빈 값은 SELECT 에서 빠진다."""
+    sql = config.build_master_sql(
+        "T", {"id": "K", "src_sys": "", "tar_table": "TGT"}
+    )
+    assert "SELECT K, TGT" in sql
+
+
+def test_build_master_sql_rejects_injection():
+    """이름은 바인드로 못 넘겨 문자열에 들어간다. 반드시 검증한다."""
+    import pytest as _pytest
+
+    for bad_table in ("IF_MST; DROP TABLE X", "IF MST", "1MST", ""):
+        with _pytest.raises(ValueError):
+            config.build_master_sql(bad_table, {"id": "IFID"})
+    with _pytest.raises(ValueError):
+        config.build_master_sql("IF_MST", {"id": "IFID OR 1=1"})
+    with _pytest.raises(ValueError):
+        config.build_master_sql("IF_MST", {"id": ""})   # id 는 필수다

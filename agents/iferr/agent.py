@@ -339,7 +339,8 @@ def lookup(state: IfErrState) -> IfErrState:
             c["db"] = {"status": "unknown", "rule": "sql-not-configured", "rows": {}}
         warnings.append(
             "조회 SQL 이 설정되지 않았다 — 확인 필요 "
-            "(config.IFERR_SQL 에 :if_key 를 쓰는 SELECT 를 넣을 것)"
+            "(config_local.py 에 IFERR_MASTER_TABLE 과 IFERR_MASTER_FIELDS 를 "
+            "적으면 SQL 이 자동으로 만들어진다)"
         )
         return {"cases": cases, "warnings": warnings}
 

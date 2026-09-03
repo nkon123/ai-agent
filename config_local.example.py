@@ -100,26 +100,30 @@ IFERR_KEY_PREFIXES = ("EAIIF",)
 # 조회 SQL — 바인드 변수 이름은 :if_key 로 고정이다.
 # SELECT 만 넣을 것. 문자열 결합 금지(주입 위험).
 # --------------------------------------------------------------------------
-# header 는 config.py 에 기본값(IF_MST 조회)이 들어 있다. 그대로 쓰면 되고,
-# 이력·실패 건수 테이블이 있으면 detail 을 채운다.
-# {schema} 는 ORACLE_SCHEMA 로 치환된다.
-# IFERR_SQL = {
-#     "header": """
-#         SELECT IFID, SRCSYS, TARSYS, SRCTNAME, TARTNAME
-#           FROM {schema}IF_MST
-#          WHERE IFID = :if_key
-#     """,
-#     "detail": """
-#         SELECT ...
-#           FROM {schema}IF_LOG
-#          WHERE IFID = :if_key
-#          ORDER BY ... DESC
-#     """,
-#     "impact": "",
-# }
+# 인터페이스 정의 마스터 테이블. 이름만 적으면 조회 SQL 이 자동으로
+# 만들어진다 — SQL 을 쓸 필요가 없다.
+IFERR_MASTER_TABLE = "IF_MST"
 
-# 마스터 컬럼 이름이 다르면 매핑한다.
-# IFERR_MASTER_FIELDS = {
-#     "id": "IFID", "src_sys": "SRCSYS", "tar_sys": "TARSYS",
-#     "src_table": "SRCTNAME", "tar_table": "TARTNAME",
+# 그 테이블의 컬럼 이름. id 는 필수(메일에서 뽑은 키와 비교할 컬럼).
+# 나머지는 있는 것만 적는다. 빈 값은 SELECT 목록에서 빠진다.
+IFERR_MASTER_FIELDS = {
+    "id": "IFID",              # 인터페이스 ID
+    "src_sys": "SRCSYS",       # 소스 시스템
+    "tar_sys": "TARSYS",       # 타겟 시스템
+    "src_table": "SRCTNAME",   # 소스 테이블
+    "tar_table": "TARTNAME",   # 타겟 테이블
+}
+
+# 자동 생성되는 SQL (참고)
+#     SELECT IFID, SRCSYS, TARSYS, SRCTNAME, TARTNAME
+#       FROM {schema}IF_MST
+#      WHERE IFID = :if_key
+
+# 자동 생성으로 부족하면 SQL 을 직접 쓴다. 이쪽이 우선한다.
+# 바인드 이름은 :if_key 고정, {schema} 는 ORACLE_SCHEMA 로 치환된다.
+# SELECT 만 넣을 것.
+# IFERR_SQL = {
+#     "header": "SELECT ... FROM {schema}IF_MST WHERE IFID = :if_key",
+#     "detail": "SELECT ... FROM {schema}IF_LOG WHERE IFID = :if_key",
+#     "impact": "",
 # }

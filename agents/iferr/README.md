@@ -193,15 +193,33 @@ EAIIF0001234 를 이름에 'IF' 가 든 문자형 컬럼에서 찾는다...
 | `ORA-01017` | 계정·비밀번호 오류 |
 | `ORA-00942` | 테이블이 없거나 권한이 없다. `ORACLE_SCHEMA` 확인 |
 
-### 3. 조회 SQL (`config.IFERR_SQL`)
+### 3. 인터페이스 마스터 테이블 (`config_local.py`)
 
-기본값이 인터페이스 마스터(`IF_MST`) 조회로 들어가 있다.
+**테이블·컬럼 이름만 적으면 SQL 이 자동으로 만들어진다.** SQL 을 쓸 필요가 없다.
+사이트마다 이름이 다르므로 코드에는 아무것도 박혀 있지 않다.
+
+```python
+IFERR_MASTER_TABLE = "IF_MST"
+IFERR_MASTER_FIELDS = {
+    "id":        "IFID",       # 인터페이스 ID — 필수(메일의 키와 비교)
+    "src_sys":   "SRCSYS",     # 소스 시스템
+    "tar_sys":   "TARSYS",     # 타겟 시스템
+    "src_table": "SRCTNAME",   # 소스 테이블
+    "tar_table": "TARTNAME",   # 타겟 테이블
+}
+```
+
+이렇게 만들어진다.
 
 ```sql
 SELECT IFID, SRCSYS, TARSYS, SRCTNAME, TARTNAME
   FROM {schema}IF_MST
  WHERE IFID = :if_key
 ```
+
+없는 컬럼은 비워 두면 `SELECT` 목록에서 빠진다. `id` 만 필수다.
+`{schema}` 는 `ORACLE_SCHEMA` 로 치환된다 — 접속 계정과 테이블 소유자가
+달라도 손댈 곳이 없다.
 
 메일에서 뽑은 `IFID` 로 이 행을 찾으면 **그 인터페이스가 무엇을 어디로
 나르는지**가 나온다. 실패했다는 것은 곧 타겟 테이블에 데이터가 들어가지
@@ -211,22 +229,14 @@ SELECT IFID, SRCSYS, TARSYS, SRCTNAME, TARTNAME
 EAIIF0001234: found — SAP.ZORDER_OUT → ERP.IF_ORDER_TMP / header 1건
 ```
 
-`{schema}` 는 `ORACLE_SCHEMA` 로 치환된다(미설정이면 빈 문자열).
-접속 계정과 테이블 소유자가 달라도 SQL 을 고칠 필요가 없다.
+이름은 SQL 문자열에 들어가므로(바인드로 넘길 수 없다) `^[A-Za-z][A-Za-z0-9_$#]{0,29}$`
+로 검증한다. 이상한 이름은 기동 시 stderr 로 알리고 SQL 을 만들지 않는다.
 
-컬럼 이름이 다르면 `IFERR_MASTER_FIELDS` 로 매핑한다.
+자동 생성으로 부족하면 `IFERR_SQL` 에 직접 쓴다(이쪽이 우선).
+`detail` / `impact` 는 비어 있다 — 전송 이력이나 실패 건수를 담은 테이블이
+있으면 채운다.
 
-```python
-IFERR_MASTER_FIELDS = {
-    "id": "IFID", "src_sys": "SRCSYS", "tar_sys": "TARSYS",
-    "src_table": "SRCTNAME", "tar_table": "TARTNAME",
-}
-```
-
-`detail` / `impact` 는 아직 비어 있다 — 실제 전송 이력이나 실패 건수를
-담은 테이블이 있으면 채운다.
-
-#### 원래 이 절의 내용 (참고)
+#### 조회 SQL 직접 쓰기
 
 ```python
 IFERR_SQL = {

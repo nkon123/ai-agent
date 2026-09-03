@@ -210,28 +210,27 @@ IFERR_KEY_PATTERNS: tuple[tuple[str, str], ...] = (
 # 접속 계정과 테이블 소유자가 다를 때 SQL 을 고치지 않아도 되게 하려는 것이다.
 IFERR_SQL: Dict[str, str] = {
     # 인터페이스 정의 마스터. 이 인터페이스가 무엇을 어디로 나르는지.
-    "header": _env_str(
-        "IFERR_SQL_HEADER",
-        """
-        SELECT IFID, SRCSYS, TARSYS, SRCTNAME, TARTNAME
-          FROM {schema}IF_MST
-         WHERE IFID = :if_key
-        """,
-    ),
+    # 비워 두면 아래 IFERR_MASTER_TABLE/FIELDS 로 자동 생성한다.
+    "header": _env_str("IFERR_SQL_HEADER", ""),
     # 그 인터페이스가 실어 온 데이터 행 (이력/로그 테이블이 있으면 여기에)
     "detail": _env_str("IFERR_SQL_DETAIL", ""),
     # 그 데이터가 영향을 주는 후속 대상
     "impact": _env_str("IFERR_SQL_IMPACT", ""),
 }
 
-# 마스터 조회 결과에서 의미 있는 컬럼 이름.
-# 사이트마다 이름이 다를 수 있어 매핑으로 둔다. 영향 문구를 만들 때 쓴다.
+# 인터페이스 정의 마스터 테이블 이름. 사이트마다 다르므로 코드에 박지 않는다.
+# 이 값만 채우면 header SQL 이 자동으로 만들어진다(SQL 을 쓸 필요가 없다).
+#     IFERR_MASTER_TABLE = "IF_MST"
+IFERR_MASTER_TABLE: str = _env_str("IFERR_MASTER_TABLE", "")
+
+# 그 테이블의 컬럼 이름. 값이 비어 있으면 SELECT 목록에서 빠진다.
+# id 는 필수다(WHERE 조건에 쓴다).
 IFERR_MASTER_FIELDS: Dict[str, str] = {
-    "id": _env_str("IFERR_FIELD_ID", "IFID"),
-    "src_sys": _env_str("IFERR_FIELD_SRC_SYS", "SRCSYS"),
-    "tar_sys": _env_str("IFERR_FIELD_TAR_SYS", "TARSYS"),
-    "src_table": _env_str("IFERR_FIELD_SRC_TABLE", "SRCTNAME"),
-    "tar_table": _env_str("IFERR_FIELD_TAR_TABLE", "TARTNAME"),
+    "id": _env_str("IFERR_FIELD_ID", ""),
+    "src_sys": _env_str("IFERR_FIELD_SRC_SYS", ""),
+    "tar_sys": _env_str("IFERR_FIELD_TAR_SYS", ""),
+    "src_table": _env_str("IFERR_FIELD_SRC_TABLE", ""),
+    "tar_table": _env_str("IFERR_FIELD_TAR_TABLE", ""),
 }
 
 # 조회 결과에서 상태로 볼 컬럼 후보. 있으면 값별로 집계해 보여준다.
@@ -414,6 +413,60 @@ if IFERR_KEY_PREFIXES:
         + IFERR_KEY_PATTERNS
     )
 
+# 마스터 조회 SQL을 테이블·컬럼 이름으로부터 만든다.
+# 덮어쓰기가 끝난 뒤여야 config_local.py 의 이름이 반영된다.
+_SQL_IDENT = re.compile(r"^[A-Za-z][A-Za-z0-9_$#]{0,29}$")
+
+
+def _ident(name: str, what: str) -> str:
+    """SQL 에 넣을 식별자를 검증한다.
+
+    테이블·컬럼 이름은 바인드 변수로 넘길 수 없어 문자열에 들어간다.
+    설정 파일에서 오는 값이므로 반드시 검증한다.
+    """
+    if not _SQL_IDENT.match(name or ""):
+        raise ValueError(f"{what} 이름으로 쓸 수 없다: {name!r}")
+    return name.upper()
+
+
+def build_master_sql(
+    table: str, fields: Mapping[str, str], bind: str = "if_key"
+) -> str:
+    """마스터 조회 SQL 을 만든다. 값은 언제나 바인드로 들어간다.
+
+    이름만 문자열에 들어가고, 그 이름은 _ident 로 검증한다.
+    비어 있는 컬럼은 SELECT 목록에서 빠진다 — 사이트마다 있는 컬럼이 다르다.
+    """
+    tab = _ident(table, "테이블")
+    id_col = _ident(fields.get("id", ""), "id 컬럼")
+    cols = [id_col] + [
+        _ident(v, f"{k} 컬럼")
+        for k, v in fields.items()
+        if k != "id" and str(v).strip()
+    ]
+    # 중복 제거(순서 유지). 같은 컬럼을 두 번 SELECT 할 이유가 없다.
+    seen: list[str] = []
+    for c in cols:
+        if c not in seen:
+            seen.append(c)
+    return (
+        f"SELECT {', '.join(seen)}\n"
+        f"  FROM {{schema}}{tab}\n"
+        f" WHERE {id_col} = :{bind}"
+    )
+
+
+IFERR_MASTER_SQL_ERROR: str = ""
+if not IFERR_SQL["header"].strip() and IFERR_MASTER_TABLE.strip():
+    try:
+        IFERR_SQL["header"] = build_master_sql(
+            IFERR_MASTER_TABLE, IFERR_MASTER_FIELDS
+        )
+    except ValueError as e:
+        # 조용히 넘기면 '조회 SQL 미설정'으로만 보여 원인을 못 찾는다.
+        IFERR_MASTER_SQL_ERROR = str(e)
+        print(f"[config] 마스터 SQL 을 만들지 못했다: {e}", file=sys.stderr)
+
 # 파생값은 덮어쓰기가 끝난 뒤에 조립한다.
 if not MCP_SERVER_URL:
     MCP_SERVER_URL = f"http://{MCP_HTTP_HOST}:{MCP_HTTP_PORT}/mcp"
@@ -450,6 +503,9 @@ def describe() -> str:
         + f" / 최근 {MAIL_LOOKBACK_HOURS}h",
         f"  키 접두어     : "
         + (", ".join(IFERR_KEY_PREFIXES) or "(없음 — 라벨 패턴만 사용)"),
+        f"  마스터 테이블 : "
+        + (IFERR_MASTER_TABLE or "(미설정 — IFERR_MASTER_TABLE)")
+        + (f"  [{IFERR_MASTER_SQL_ERROR}]" if IFERR_MASTER_SQL_ERROR else ""),
         f"  IFERR_SQL    : "
         + (", ".join(k for k, v in IFERR_SQL.items() if v.strip()) or "(미설정 — 조회 불가)"),
         f"  MCP          : {MCP_PROTOCOL_VERSION} / {MCP_TRANSPORT}"
