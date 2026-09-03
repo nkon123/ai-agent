@@ -114,6 +114,10 @@ ORACLE_USER: str | None = _env_opt("ORACLE_USER")
 ORACLE_PASSWORD: str | None = _env_opt("ORACLE_PASSWORD")
 DB_TIMEOUT_SEC: int = _env_int("DB_TIMEOUT_SEC", 30)
 
+# 테이블이 있는 스키마(소유자). 비우면 접속 계정과 같다고 본다.
+# 읽기 전용 계정으로 접속해 다른 스키마의 테이블을 보는 경우가 흔하다.
+ORACLE_SCHEMA: str | None = _env_opt("ORACLE_SCHEMA")
+
 # --------------------------------------------------------------------------
 # Outlook 메일 (iferr 에이전트)
 #
@@ -403,6 +407,7 @@ def describe() -> str:
         f"  ORACLE_DSN   : {ORACLE_DSN or '(미설정 — DB 에이전트 비활성)'}",
         f"  ORACLE_USER  : {ORACLE_USER or '(미설정)'}",
         f"  ORACLE_PW    : {'설정됨' if ORACLE_PASSWORD else '(미설정)'}",
+        f"  ORACLE_SCHEMA: {ORACLE_SCHEMA or '(접속 계정과 동일)'}",
         f"  DB_TIMEOUT   : {DB_TIMEOUT_SEC}s",
         f"  오류 키워드   : {', '.join(MAIL_SUBJECT_KEYWORDS) or '(없음 — 전부 대상 아님)'}"
         + f"  [{MAIL_SUBJECT_MATCH}]",

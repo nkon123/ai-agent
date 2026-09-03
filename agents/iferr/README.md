@@ -157,6 +157,34 @@ python agents\iferr\agent.py --test-key "(EAA) Alert Mail - EAIIF0001234 전송 
     근거: (EAA) Alert Mail - EAIIF0001234 전송 실패
 ```
 
+### DB 점검 — 스키마를 모를 때
+
+```bat
+:: 1. 접속되는지
+python agents\iferr\agent.py --check-db
+
+:: 2. 이름으로 후보 찾기 (이름에 EAI 가 든 테이블·컬럼)
+python agents\iferr\agent.py --find-column EAI
+
+:: 3. 값으로 찾기 — 이 키가 실제로 들어 있는 테이블
+python agents\iferr\agent.py --find-key EAIIF0001234
+python agents\iferr\agent.py --find-key EAIIF0001234 --like EAI
+```
+
+`--find-key` 는 이름에 `IF`(기본)가 들어간 **문자형 컬럼만** 뒤진다.
+전수 조사는 사내 DB 에서 몇 분씩 걸리고 부하도 크다. 못 찾으면 `--like` 를
+넓힌다. 권한이 없어 못 읽은 컬럼은 "확인 필요"로 따로 알려 준다 —
+조용히 넘기면 '없다'로 오해한다.
+
+```
+EAIIF0001234 를 이름에 'IF' 가 든 문자형 컬럼에서 찾는다...
+  IF_HDR.IF_KEY      1건
+  IF_DTL.IF_KEY      12건
+```
+
+접속 계정과 테이블 소유자가 다르면 `ORACLE_SCHEMA` 를 설정한다
+(읽기 전용 계정으로 다른 스키마를 보는 경우가 흔하다).
+
 ### 3. 조회 SQL (`config.IFERR_SQL`) — **아직 비어 있다**
 
 ```python

@@ -19,9 +19,16 @@
 from __future__ import annotations
 
 import contextlib
+import re
 from typing import Any, Iterator, Mapping, Sequence
 
-from config import DB_TIMEOUT_SEC, ORACLE_DSN, ORACLE_PASSWORD, ORACLE_USER
+from config import (
+    DB_TIMEOUT_SEC,
+    ORACLE_DSN,
+    ORACLE_PASSWORD,
+    ORACLE_SCHEMA,
+    ORACLE_USER,
+)
 
 
 class OracleUnavailable(RuntimeError):
@@ -71,6 +78,124 @@ def get_conn() -> Iterator[Any]:
     finally:
         with contextlib.suppress(Exception):
             conn.close()
+
+
+def check_connection(timeout: int | None = None) -> tuple[bool, str]:
+    """연결과 계정을 확인한다. (성공여부, 메시지)
+
+    예외로 던지지 않고 튜플로 돌려주는 이유: 진단 화면은 실패해도 계속
+    진행되어야 한다. 실패 원인은 메시지에 그대로 담는다.
+    """
+    if not is_configured():
+        return False, (
+            "Oracle 설정이 비어 있다 — config_local.py 의 "
+            "ORACLE_DSN / ORACLE_USER / ORACLE_PASSWORD 를 채울 것"
+        )
+    try:
+        rows = query(
+            "SELECT USER AS db_user, SYSDATE AS now FROM dual", timeout=timeout
+        )
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+    if not rows:
+        return False, "연결은 됐으나 dual 조회 결과가 비었다 — 확인 필요"
+    return True, (
+        f"접속 OK (dsn={ORACLE_DSN}, 접속계정={rows[0].get('DB_USER')}, "
+        f"서버시각={rows[0].get('NOW')})"
+    )
+
+
+# 데이터 딕셔너리에서 온 식별자만 허용하는 패턴.
+# 테이블·컬럼 이름은 바인드 변수로 넘길 수 없어 문자열에 넣어야 하는데,
+# 그 값이 사용자 입력이면 주입 위험이 생긴다. 그래서 (1) 이름은 반드시
+# 데이터 딕셔너리 조회 결과에서만 가져오고 (2) 그 결과도 이 패턴으로
+# 다시 검증한 뒤 큰따옴표로 감싼다.
+_IDENT = re.compile(r"^[A-Za-z][A-Za-z0-9_$#]{0,29}$")
+
+
+def _quote_ident(name: str) -> str:
+    """식별자를 검증하고 큰따옴표로 감싼다. 아니면 예외."""
+    if not _IDENT.match(name or ""):
+        raise ValueError(f"식별자로 쓸 수 없는 이름: {name!r}")
+    return '"' + name.upper() + '"'
+
+
+def find_columns(
+    name_like: str, schema: str | None = None, limit: int = 200
+) -> list[dict[str, Any]]:
+    """이름 조각으로 테이블·컬럼을 찾는다. 스키마를 모를 때 쓴다.
+
+    값이 아니라 '이름'으로 찾는다. 예: find_columns("EAI") →
+    이름에 EAI 가 들어간 테이블이나 컬럼.
+    """
+    owner = (schema or ORACLE_SCHEMA or ORACLE_USER or "").upper()
+    return query(
+        """
+        SELECT owner, table_name, column_name, data_type, data_length
+          FROM all_tab_columns
+         WHERE owner = :owner
+           AND (UPPER(column_name) LIKE :pat OR UPPER(table_name) LIKE :pat)
+         ORDER BY table_name, column_id
+        """,
+        {"owner": owner, "pat": f"%{name_like.upper()}%"},
+    )[:limit]
+
+
+def find_value(
+    value: str,
+    name_like: str = "IF",
+    schema: str | None = None,
+    max_tables: int = 60,
+    timeout: int | None = None,
+) -> list[dict[str, Any]]:
+    """특정 값이 들어 있는 테이블·컬럼을 찾는다. 스키마를 모를 때의 마지막 수단.
+
+    이름에 name_like 가 들어간 문자형 컬럼만 뒤진다. 전수 조사는 사내
+    DB 에서 몇 분씩 걸리고 부하도 크므로 후보를 좁히고 상한(max_tables)을 둔다.
+
+    값은 바인드로 넘긴다. 테이블·컬럼 이름만 문자열에 들어가는데,
+    그 이름은 데이터 딕셔너리에서 온 것을 _quote_ident 로 다시 검증한다.
+    """
+    owner = (schema or ORACLE_SCHEMA or ORACLE_USER or "").upper()
+    candidates = query(
+        """
+        SELECT owner, table_name, column_name
+          FROM all_tab_columns
+         WHERE owner = :owner
+           AND data_type IN ('VARCHAR2', 'CHAR', 'NVARCHAR2')
+           AND UPPER(column_name) LIKE :pat
+         ORDER BY table_name, column_name
+        """,
+        {"owner": owner, "pat": f"%{name_like.upper()}%"},
+    )
+
+    hits: list[dict[str, Any]] = []
+    for c in candidates[:max_tables]:
+        tab = f"{_quote_ident(c['OWNER'])}.{_quote_ident(c['TABLE_NAME'])}"
+        col = _quote_ident(c["COLUMN_NAME"])
+        try:
+            rows = query(
+                f"SELECT COUNT(*) AS cnt FROM {tab} WHERE {col} = :v",
+                {"v": value},
+                timeout=timeout,
+            )
+        except Exception as e:
+            # 권한 없는 테이블 하나 때문에 탐색 전체가 멈추면 안 된다.
+            hits.append(
+                {
+                    "table": c["TABLE_NAME"],
+                    "column": c["COLUMN_NAME"],
+                    "count": None,
+                    "error": f"{type(e).__name__}: {e}",
+                }
+            )
+            continue
+        cnt = rows[0]["CNT"] if rows else 0
+        if cnt:
+            hits.append(
+                {"table": c["TABLE_NAME"], "column": c["COLUMN_NAME"], "count": cnt}
+            )
+    return hits
 
 
 def query(

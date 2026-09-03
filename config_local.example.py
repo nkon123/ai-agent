@@ -38,6 +38,8 @@ SOURCE_ROOTS = {
 ORACLE_DSN = "dbhost:1521/ORCL"
 ORACLE_USER = "erp_read"
 ORACLE_PASSWORD = "여기에 비밀번호"
+# 접속 계정과 테이블 소유자가 다르면 지정한다(읽기 전용 계정에서 흔하다).
+# ORACLE_SCHEMA = "ERP"
 
 # --------------------------------------------------------------------------
 # Outlook — iferr 에이전트

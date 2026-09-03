@@ -57,3 +57,26 @@ def check_llm_status() -> str:
         ok, msg = check_ollama(model)
         lines.append(f"{label}({model}): {'OK' if ok else '실패'} — {msg}")
     return "\n".join(lines)
+
+
+@register(
+    label="DB 연결 확인",
+    view="text",
+    hint="check_db_status 는 Oracle 접속 문제를 진단할 때 쓴다.",
+    read_only=True,
+    tier="step",
+)
+def check_db_status() -> str:
+    """Oracle 접속과 계정을 확인한다.
+
+    조회 결과가 '확인 불가'로 나올 때 설정 문제인지 연결 문제인지 가른다.
+    """
+    from core.oracle import check_connection
+
+    ok, msg = check_connection()
+    lines = [("OK — " if ok else "실패 — ") + msg]
+    configured = [k for k, v in config.IFERR_SQL.items() if v.strip()]
+    lines.append(
+        "조회 SQL: " + (", ".join(configured) or "(미설정 — config_local.py 의 IFERR_SQL)")
+    )
+    return "\n".join(lines)

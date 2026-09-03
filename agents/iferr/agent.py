@@ -611,6 +611,13 @@ if __name__ == "__main__":
                     help="최근 오류 메일 N통의 본문을 out/ 에 저장(정규식 확인용)")
     ap.add_argument("--test-key", default="", metavar="TEXT",
                     help="붙여넣은 제목/본문에서 키가 뽑히는지 바로 확인")
+    ap.add_argument("--check-db", action="store_true", help="Oracle 접속 확인")
+    ap.add_argument("--find-column", default="", metavar="NAME",
+                    help="이름에 이 조각이 들어간 테이블·컬럼 찾기 (예: EAI)")
+    ap.add_argument("--find-key", default="", metavar="VALUE",
+                    help="이 값이 들어 있는 테이블·컬럼 찾기 (예: EAIIF0001234)")
+    ap.add_argument("--like", default="IF", metavar="NAME",
+                    help="--find-key 가 뒤질 컬럼 이름 조각 (기본 IF)")
     args = ap.parse_args()
 
     # ---- 진단 모드 ---------------------------------------------------------
@@ -631,6 +638,57 @@ if __name__ == "__main__":
             print(f"  {h['key']:<24} (규칙 {h['rule']})")
             print(f"    근거: {h['evidence']}")
         raise SystemExit(0)
+
+    if args.check_db:
+        from core.oracle import check_connection
+
+        ok, msg = check_connection()
+        print(("OK   " if ok else "실패 ") + msg)
+        raise SystemExit(0 if ok else 1)
+
+    if args.find_column:
+        from core.oracle import find_columns
+
+        try:
+            rows = find_columns(args.find_column)
+        except Exception as e:
+            print(f"[조회 실패] {type(e).__name__}: {e}")
+            raise SystemExit(1)
+        if not rows:
+            print(f"'{args.find_column}' 가 이름에 들어간 테이블·컬럼이 없다.")
+            print("  ORACLE_SCHEMA 가 맞는지 확인할 것(접속 계정과 다른 경우가 흔하다)")
+            raise SystemExit(1)
+        print(f"{'테이블':<32}{'컬럼':<28}타입")
+        print("─" * 76)
+        for r in rows:
+            print(
+                f"{r['TABLE_NAME']:<32}{r['COLUMN_NAME']:<28}"
+                f"{r['DATA_TYPE']}({r['DATA_LENGTH']})"
+            )
+        raise SystemExit(0)
+
+    if args.find_key:
+        from core.oracle import find_value
+
+        print(f"'{args.find_key}' 를 이름에 '{args.like}' 가 든 문자형 컬럼에서 찾는다...")
+        try:
+            hits = find_value(args.find_key, name_like=args.like)
+        except Exception as e:
+            print(f"[조회 실패] {type(e).__name__}: {e}")
+            raise SystemExit(1)
+        found = [h for h in hits if h.get("count")]
+        if not found:
+            print("찾지 못했다.")
+            print(f"  - --like 를 넓혀 볼 것 (예: --like EAI, --like KEY)")
+            print("  - ORACLE_SCHEMA 가 맞는지 확인할 것")
+        for h in found:
+            print(f"  {h['table']}.{h['column']}  {h['count']}건")
+        errors = [h for h in hits if h.get("error")]
+        if errors:
+            # 권한 없는 테이블을 조용히 넘기면 '없다'로 오해한다.
+            print(f"\n[확인 필요] 조회하지 못한 컬럼 {len(errors)}개 (권한 등)")
+            print(f"  예: {errors[0]['table']}.{errors[0]['column']} — {errors[0]['error']}")
+        raise SystemExit(0 if found else 1)
 
     if args.folders:
         from core.outlook import list_folders

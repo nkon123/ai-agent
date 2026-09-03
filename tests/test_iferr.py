@@ -578,3 +578,69 @@ def test_prefix_id_is_found_in_real_mail(monkeypatch: Any):
     assert mail["is_error"]
     # 본문의 _TMP 테이블명은 키가 아니다. 중복 없이 하나만 나와야 한다.
     assert mail["keys"] == ["ABCIF0001234"]
+
+
+# --------------------------------------------------------------------------
+# DB 진단 (스키마 탐색)
+# --------------------------------------------------------------------------
+
+
+def test_check_connection_without_config(monkeypatch: Any):
+    """설정이 없으면 예외가 아니라 이유를 돌려준다(진단 화면은 계속 진행)."""
+    from core import oracle
+
+    monkeypatch.setattr(oracle, "ORACLE_DSN", None)
+    ok, msg = oracle.check_connection()
+    assert ok is False and "config_local.py" in msg
+
+
+def test_identifier_validation_blocks_injection():
+    """테이블·컬럼 이름은 바인드로 못 넘겨 문자열에 들어간다.
+
+    그래서 데이터 딕셔너리에서 온 이름만 쓰고, 그것도 다시 검증한다.
+    """
+    from core import oracle
+
+    assert oracle._quote_ident("if_hdr") == '"IF_HDR"'
+    assert oracle._quote_ident("IF_HDR$1") == '"IF_HDR$1"'
+    for bad in ("1TABLE", "IF HDR", 'IF"HDR', "DROP TABLE X", "", "a" * 31):
+        with pytest.raises(ValueError):
+            oracle._quote_ident(bad)
+
+
+def test_find_value_uses_bind_for_the_value(monkeypatch: Any):
+    """값은 반드시 바인드로 들어간다. 이름만 문자열에 들어간다."""
+    from core import oracle
+
+    calls: list[dict[str, Any]] = []
+
+    def fake_query(sql: str, binds: Any = None, timeout: Any = None):
+        calls.append({"sql": sql, "binds": binds})
+        if "all_tab_columns" in sql:
+            return [
+                {"OWNER": "ERP", "TABLE_NAME": "IF_HDR", "COLUMN_NAME": "IF_KEY"}
+            ]
+        return [{"CNT": 3}]
+
+    monkeypatch.setattr(oracle, "query", fake_query)
+    hits = oracle.find_value("EAIIF0001234", name_like="IF", schema="ERP")
+
+    assert hits == [{"table": "IF_HDR", "column": "IF_KEY", "count": 3}]
+    count_sql = calls[-1]
+    assert count_sql["binds"] == {"v": "EAIIF0001234"}
+    assert "EAIIF0001234" not in count_sql["sql"]
+    assert '"ERP"."IF_HDR"' in count_sql["sql"]
+
+
+def test_find_value_reports_unreadable_columns(monkeypatch: Any):
+    """권한 없는 테이블을 조용히 넘기면 '없다'로 오해한다."""
+    from core import oracle
+
+    def fake_query(sql: str, binds: Any = None, timeout: Any = None):
+        if "all_tab_columns" in sql:
+            return [{"OWNER": "ERP", "TABLE_NAME": "T", "COLUMN_NAME": "IF_KEY"}]
+        raise RuntimeError("ORA-00942: table or view does not exist")
+
+    monkeypatch.setattr(oracle, "query", fake_query)
+    hits = oracle.find_value("X", schema="ERP")
+    assert hits[0]["count"] is None and "ORA-00942" in hits[0]["error"]

@@ -162,6 +162,7 @@ tests/              core/ + MCP 회귀 테스트
 | `list_source_roots` | step | 소스 루트와 파일 수 |
 | `describe_settings` | step | 서버가 보고 있는 설정 |
 | `check_llm_status` | step | Ollama 연결·모델 확인 |
+| `check_db_status` | step | Oracle 접속·조회 SQL 설정 확인 |
 
 `step` 툴은 챗봇 대화에는 안 뜨지만 `/api/tools` 목록과 다른 MCP 호스트에서는
 보인다. "왜 결과가 비었나"를 가를 때 `describe_settings` → `list_source_roots`
