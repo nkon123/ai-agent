@@ -88,6 +88,70 @@ ORACLE_PASSWORD: str | None = _env_opt("ORACLE_PASSWORD")
 DB_TIMEOUT_SEC: int = _env_int("DB_TIMEOUT_SEC", 30)
 
 # --------------------------------------------------------------------------
+# Outlook 메일 (iferr 에이전트)
+#
+# 읽기 전용이다. 회신·삭제·이동은 하지 않는다(안전 규칙).
+# --------------------------------------------------------------------------
+# com : 로컬 Outlook 데스크톱 (Windows + pywin32). 폐쇄망 기본값
+# eml : 폴더의 .eml 파일 (테스트·리눅스 개발 PC)
+MAIL_BACKEND: str = _env_str("MAIL_BACKEND", "com")
+
+# COM 백엔드에서 볼 폴더. 빈 값이면 기본 받은 편지함.
+# Outlook 규칙으로 인터페이스 오류 메일만 모아 둔 하위 폴더를 지정하면
+# 스캔 범위가 줄어 훨씬 빠르다.
+MAIL_FOLDER: str = _env_str("MAIL_FOLDER", r"받은 편지함\인터페이스")
+
+# eml 백엔드에서 읽을 폴더
+MAIL_EML_DIR: str = _env_str("MAIL_EML_DIR", r"./samples/mail")
+
+# 몇 시간 전까지 볼 것인가. 사내 사서함은 수만 통이라 기간을 좁히지 않으면
+# 요청 하나가 몇 분씩 걸린다.
+MAIL_LOOKBACK_HOURS: int = _env_int("MAIL_LOOKBACK_HOURS", 24)
+MAIL_MAX_COUNT: int = _env_int("MAIL_MAX_COUNT", 200)
+
+# 오류 메일을 고르는 제목 키워드. 하나라도 걸리면 대상으로 본다.
+MAIL_SUBJECT_KEYWORDS: tuple[str, ...] = tuple(
+    _env_str("MAIL_SUBJECT_KEYWORDS", "오류,에러,실패,ERROR,FAIL,FAILED,EXCEPTION").split(",")
+)
+
+# --------------------------------------------------------------------------
+# 인터페이스 오류 확인 (iferr 에이전트)
+# --------------------------------------------------------------------------
+# 메일에서 인터페이스 키를 뽑는 정규식. 그룹 1이 키다.
+# 위에서부터 순서대로 시도하고, 맞는 것이 나오면 그 규칙 이름을 근거로 남긴다.
+# 실제 메일 형식을 확인한 뒤 이 목록만 고치면 된다.
+IFERR_KEY_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("if-id-labeled", r"(?i)\bIF[_\-]?ID\s*[:=]\s*([A-Za-z0-9_\-]{3,40})"),
+    ("interface-ko", r"인터페이스\s*(?:ID|아이디|키|번호)\s*[:=]?\s*([A-Za-z0-9_\-]{3,40})"),
+    ("tx-no-ko", r"(?:전문|거래|연계)\s*(?:번호|키)\s*[:=]?\s*([A-Za-z0-9_\-]{3,40})"),
+    ("if-prefix", r"(?i)\b(IF[_\-]?[A-Z0-9]{2,}[_\-][A-Z0-9]{2,})\b"),
+)
+
+# 키로 조회할 SQL. 바인드 변수 이름은 :if_key 로 고정한다.
+# 스키마가 확정되면 여기만 채우면 된다 — 에이전트 코드는 손대지 않는다.
+# 문자열 결합 금지(주입 위험). 값은 반드시 바인드로 들어간다.
+IFERR_SQL: Dict[str, str] = {
+    # 인터페이스 1건의 헤더/상태
+    "header": _env_str("IFERR_SQL_HEADER", ""),
+    # 그 인터페이스가 실어 온 데이터 행
+    "detail": _env_str("IFERR_SQL_DETAIL", ""),
+    # 그 데이터가 영향을 주는 후속 대상
+    "impact": _env_str("IFERR_SQL_IMPACT", ""),
+}
+
+# 조회 결과에서 상태로 볼 컬럼 후보. 있으면 값별로 집계해 보여준다.
+# 스키마를 몰라도 동작하게 하기 위한 장치다.
+IFERR_STATUS_COLUMNS: tuple[str, ...] = tuple(
+    _env_str(
+        "IFERR_STATUS_COLUMNS", "STATUS,STS,PROC_STATUS,ERR_CD,ERROR_CODE,RESULT_CD"
+    ).split(",")
+)
+
+# 한 번에 조회할 최대 행 수. 로컬 LLM 이 붙은 요청 하나가 수만 행을
+# 끌어오면 챗봇이 통째로 멎는다.
+IFERR_MAX_ROWS: int = _env_int("IFERR_MAX_ROWS", 200)
+
+# --------------------------------------------------------------------------
 # MCP (Model Context Protocol) — 스펙 리비전 2026-07-28
 #
 # 툴은 전부 MCP 서버(mcp_server/)가 노출하고, 챗봇은 MCP 클라이언트로 붙는다.
@@ -151,6 +215,11 @@ def describe() -> str:
         f"  ORACLE_USER  : {ORACLE_USER or '(미설정)'}",
         f"  ORACLE_PW    : {'설정됨' if ORACLE_PASSWORD else '(미설정)'}",
         f"  DB_TIMEOUT   : {DB_TIMEOUT_SEC}s",
+        f"  MAIL         : {MAIL_BACKEND} / "
+        + (MAIL_FOLDER or "(기본 받은 편지함)" if MAIL_BACKEND == "com" else MAIL_EML_DIR)
+        + f" / 최근 {MAIL_LOOKBACK_HOURS}h",
+        f"  IFERR_SQL    : "
+        + (", ".join(k for k, v in IFERR_SQL.items() if v.strip()) or "(미설정 — 조회 불가)"),
         f"  MCP          : {MCP_PROTOCOL_VERSION} / {MCP_TRANSPORT}"
         + (f" → {MCP_SERVER_URL}" if MCP_TRANSPORT != "stdio" else " (python -m mcp_server)"),
         f"  SERVER       : http://{HOST}:{PORT} (debug={DEBUG})",

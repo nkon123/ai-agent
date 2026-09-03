@@ -1,0 +1,18 @@
+Subject: =?utf-8?b?W+yXsOqzhOyYpOulmF0g7KO866y4IOyduO2EsO2OmOydtOyKpCDsoIQ=?=
+ =?utf-8?b?7IahIOyLpO2MqCDslYzrprw=?=
+From: if.monitor@partner.example
+To: erp.admin@corp.example
+Date: Thu, 03 Sep 2026 13:48:55 -0000
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+MIME-Version: 1.0
+
+안녕하세요.
+
+아래 인터페이스 처리 중 오류가 발생했습니다.
+
+  IF_ID : IF_ORD_SEND
+  발생시각 : 2026-09-03 08:12:44
+  오류내용 : ORA-01400 cannot insert NULL into ("ERP"."ORD_HDR"."CUST_CD")
+
+확인 부탁드립니다.

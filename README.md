@@ -40,6 +40,7 @@ set MCP_TRANSPORT=streamable-http && python -m mcp_server
 # 에이전트 단독 실행 (MCP 없이)
 python agents/echo/agent.py "이거 왜 안 되지?"
 python agents/usage/agent.py TOTAL_AMT --root SAMPLE
+MAIL_BACKEND=eml python agents/iferr/agent.py
 
 # 테스트
 pytest -q
@@ -78,7 +79,10 @@ core/
 agents/
   echo/             구조 확인용 최소 샘플 — 새 에이전트의 템플릿
   usage/            식별자 사용처 찾기 — core/ 를 실제로 쓰는 샘플
+  iferr/            인터페이스 오류 메일 → 키 추출 → DB 영향 확인
+core/outlook.py     Outlook 메일 읽기 (COM / .eml). 읽기 전용
 samples/src/        usage 를 바로 돌려 볼 예제 소스 (함정 포함)
+samples/mail/       iferr 를 Outlook 없이 돌려 볼 예제 메일
 mcp_server/         MCP 서버 (툴 계층)
   __main__.py       python -m mcp_server
   tools/            MCP 툴 껍데기 + 자동 등록 레지스트리
@@ -101,17 +105,19 @@ tests/              core/ + MCP 회귀 테스트
 
 ---
 
-## 샘플 에이전트 둘
+## 샘플 에이전트
 
 | 에이전트 | 무엇 | 볼 것 |
 |---|---|---|
 | `echo` | 문장을 질문/명령/평서로 분류 | 최소 구조. 새 에이전트는 여기서 복사해 시작한다 |
 | `usage` | 소스에서 식별자 사용처 찾기 | `core/` 를 실제로 쓰는 형태. 캐시 키 설계, 근거 남기기, '없다'와 '모른다' 구분 |
+| `iferr` | 인터페이스 오류 메일 → DB 영향 확인 | 외부 시스템(Outlook·Oracle) 연동. 실패를 '확인 불가'로 남기기, 개인정보 마스킹 |
 
 `usage` 를 돌려 보면 `core/text.py` 가 왜 그렇게 생겼는지 바로 보인다.
 
 ```bash
 python agents/usage/agent.py TOTAL_AMT --root SAMPLE
+MAIL_BACKEND=eml python agents/iferr/agent.py
 ```
 
 ```
@@ -270,6 +276,8 @@ LLM 호출 실패나 판정 불가를 조용히 넘기지 말 것. "확인 필�
 | `\b` 로 식별자 매칭 | 정규식은 `_` 를 단어 문자로 본다. `IF_A` 에서 `A` 가 안 잡힌다 |
 | `/*` `*/` 개수 세기 | `a*/*c*/b`(포인터 연산)와 `"/* x */"`(문자열 안)에서 깨진다 |
 | utf-8 로만 파일 읽기 | 사내 파일은 cp949 인 경우가 흔하다 |
+| Outlook COM 을 워커 스레드에서 `CoInitialize()` 없이 호출 | Flask/MCP 브리지는 별도 스레드다. 원인 알기 어려운 에러가 난다 |
+| Outlook `Items` 를 `Restrict` 없이 전체 순회 | 메일 한 통마다 COM 왕복이 일어나 수만 통에서 몇 분씩 걸린다 |
 | 문자열 리터럴을 그대로 두고 검색 | `'TOTAL_AMT is not a hit'` 이 사용처로 잡힌다. 사용처 검색에는 `strip_comments(..., mask_strings=True)` |
 | BOM 방치 | utf-8 디코드는 성공하면서 맨 앞에 U+FEFF 를 남긴다 |
 | `num_ctx` 미지정 | 기본 2048 이 프롬프트를 조용히 자른다 |

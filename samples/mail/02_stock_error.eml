@@ -1,0 +1,11 @@
+Subject: =?utf-8?b?7J6s6rOgIOyXsOqzhCBFUlJPUiDrsJzsg50gKOuwsOy5mCk=?=
+From: batch.noreply@partner.example
+To: erp.admin@corp.example
+Date: Thu, 03 Sep 2026 10:48:55 -0000
+Content-Type: text/plain; charset="euc-kr"
+Content-Transfer-Encoding: 8bit
+MIME-Version: 1.0
+
+배치 수행 중 오류.
+인터페이스 ID: IF_STK_RECV
+건수: 128건 중 12건 실패

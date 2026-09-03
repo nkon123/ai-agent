@@ -19,6 +19,11 @@ httpx>=0.27
 # 테스트
 pytest>=8.0
 
+# Outlook 메일을 읽는 에이전트(iferr)를 쓸 때만 필요하다.
+# Windows + Outlook 데스크톱이 설치된 PC 에서만 설치된다.
+# MAIL_BACKEND=eml 로는 이것 없이도 동작한다.
+# pywin32>=306
+
 # Oracle 을 쓰는 에이전트가 있을 때만 필요하다.
 # 없어도 나머지 기능은 동작한다. 필요해지면 주석을 풀 것.
 # oracledb>=2.0
