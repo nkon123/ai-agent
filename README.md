@@ -39,6 +39,7 @@ set MCP_TRANSPORT=streamable-http && python -m mcp_server
 
 # 에이전트 단독 실행 (MCP 없이)
 python agents/echo/agent.py "이거 왜 안 되지?"
+python agents/usage/agent.py TOTAL_AMT --root SAMPLE
 
 # 테스트
 pytest -q
@@ -75,7 +76,9 @@ core/
   text.py           인코딩 감지, 주석 제거, 식별자 정규식
   cache.py          TTL/LRU 캐시
 agents/
-  echo/             샘플 에이전트 — 새 에이전트의 템플릿
+  echo/             구조 확인용 최소 샘플 — 새 에이전트의 템플릿
+  usage/            식별자 사용처 찾기 — core/ 를 실제로 쓰는 샘플
+samples/src/        usage 를 바로 돌려 볼 예제 소스 (함정 포함)
 mcp_server/         MCP 서버 (툴 계층)
   __main__.py       python -m mcp_server
   tools/            MCP 툴 껍데기 + 자동 등록 레지스트리
@@ -97,6 +100,31 @@ tests/              core/ + MCP 회귀 테스트
 챗봇은 살아 있고, (3) 에이전트를 다른 장비로 옮겨도 transport 만 바꾸면 된다.
 
 ---
+
+## 샘플 에이전트 둘
+
+| 에이전트 | 무엇 | 볼 것 |
+|---|---|---|
+| `echo` | 문장을 질문/명령/평서로 분류 | 최소 구조. 새 에이전트는 여기서 복사해 시작한다 |
+| `usage` | 소스에서 식별자 사용처 찾기 | `core/` 를 실제로 쓰는 형태. 캐시 키 설계, 근거 남기기, '없다'와 '모른다' 구분 |
+
+`usage` 를 돌려 보면 `core/text.py` 가 왜 그렇게 생겼는지 바로 보인다.
+
+```bash
+python agents/usage/agent.py TOTAL_AMT --root SAMPLE
+```
+
+```
+erp_calc.c    : 5 | long TOTAL_AMT;          ← 선언
+erp_calc.c    :10 | TOTAL_AMT = r;           ← 대입
+erp_calc.c    :11 | return TOTAL_AMT;        ← 반환
+legacy_cp949.c: 2 | void legacy(void) {...}  ← cp949 파일도 읽는다
+order_pkg.sql : 5 | UPDATE ORDERS SET ...    ← SQL
+```
+
+주석 속 `TOTAL_AMT`, 문자열 속 `"/* TOTAL_AMT */"`, `IF_A` 의 `A` 는
+**잡히지 않는다**. 세 가지 다 실제로 오탐이 났던 형태다
+(`samples/README.md` 에 무엇을 심어 뒀는지 적어 두었다).
 
 ## 새 에이전트 추가하기
 
@@ -242,6 +270,7 @@ LLM 호출 실패나 판정 불가를 조용히 넘기지 말 것. "확인 필�
 | `\b` 로 식별자 매칭 | 정규식은 `_` 를 단어 문자로 본다. `IF_A` 에서 `A` 가 안 잡힌다 |
 | `/*` `*/` 개수 세기 | `a*/*c*/b`(포인터 연산)와 `"/* x */"`(문자열 안)에서 깨진다 |
 | utf-8 로만 파일 읽기 | 사내 파일은 cp949 인 경우가 흔하다 |
+| 문자열 리터럴을 그대로 두고 검색 | `'TOTAL_AMT is not a hit'` 이 사용처로 잡힌다. 사용처 검색에는 `strip_comments(..., mask_strings=True)` |
 | BOM 방치 | utf-8 디코드는 성공하면서 맨 앞에 U+FEFF 를 남긴다 |
 | `num_ctx` 미지정 | 기본 2048 이 프롬프트를 조용히 자른다 |
 | 전체 메시지에서 tool_calls 수집 | 체크포인터의 이전 턴 호출까지 딸려와 중복 표시된다 |

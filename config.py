@@ -53,6 +53,9 @@ def _env_opt(key: str) -> str | None:
 # --------------------------------------------------------------------------
 SOURCE_ROOTS: Dict[str, str] = {
     "ERP": _env_str("SOURCE_ROOT_ERP", r"./src"),
+    # 설치 직후 바로 돌려 볼 수 있도록 예제 소스를 하나 물려 둔다.
+    # 사내 배포 시에는 지우거나 SOURCE_ROOT_ERP 로 실제 경로를 준다.
+    "SAMPLE": _env_str("SOURCE_ROOT_SAMPLE", r"./samples/src"),
 }
 
 # --------------------------------------------------------------------------

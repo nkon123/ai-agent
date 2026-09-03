@@ -213,3 +213,29 @@ def test_cached_decorator_key_ignores_cheap_arg():
     scan.cache.clear()
     assert scan("/r", "B") == "/r:B"
     assert len(calls) == 2
+
+
+def test_strip_comments_mask_strings():
+    """식별자 사용처를 찾을 때는 문자열 '내용'도 지워야 한다.
+
+    로그 문구나 SQL 문자열에 적힌 이름은 사용처가 아니다.
+    따옴표와 줄 수는 남긴다 — 지우면 뒤 코드가 문법적으로 이상해지고,
+    줄이 밀리면 근거의 위치 정보가 쓸모없어진다.
+    """
+    out = strip_comments('char *s = "/* TOTAL_AMT */"; // x', "c", mask_strings=True)
+    assert "TOTAL_AMT" not in out
+    assert out.count('"') == 2
+
+    sql = strip_comments("v := 'TOTAL_AMT -- x'; -- real", "sql", mask_strings=True)
+    assert "TOTAL_AMT" not in sql and "real" not in sql and sql.count("'") == 2
+
+    src = 'a = "line1\nline2";\nb = 2;'
+    masked = strip_comments(src, "c", mask_strings=True)
+    assert masked.count("\n") == src.count("\n")
+    assert "b = 2;" in masked
+
+
+def test_strip_comments_keeps_strings_by_default():
+    """기본 동작은 그대로다 — 주석만 지운다."""
+    src = 'char *s = "/* x */";'
+    assert strip_comments(src, "c") == src

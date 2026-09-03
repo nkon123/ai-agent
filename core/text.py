@@ -117,8 +117,13 @@ SYNTAX: dict[str, _Syntax] = {
 }
 
 
-def strip_comments(text: str, lang: str = "c") -> str:
-    """주석을 제거한다. 문자열 리터럴 안의 내용은 건드리지 않는다.
+def strip_comments(text: str, lang: str = "c", mask_strings: bool = False) -> str:
+    """주석을 제거한다. 문자열 리터럴 안의 내용은 기본적으로 건드리지 않는다.
+
+    mask_strings=True 면 문자열 '내용'까지 공백으로 지운다(따옴표는 남긴다).
+    코드에서 식별자 사용처를 찾을 때 필요하다 — 로그 문구나 SQL 문자열에
+    적힌 이름은 사용처가 아닌데, 그냥 두면 오탐으로 잡힌다.
+    주석 제거와 같은 한 번의 스캔에서 처리한다(두 번 훑을 이유가 없다).
 
     왜 상태 머신인가:
       '/*' 와 '*/' 의 개수를 세거나 정규식으로 지우는 방식은
@@ -158,7 +163,18 @@ def strip_comments(text: str, lang: str = "c") -> str:
                 j += 1
             else:
                 j = n               # 닫히지 않은 문자열 — 끝까지가 문자열
-            out.append(text[i:j])
+            chunk = text[i:j]
+            if mask_strings:
+                # 따옴표와 줄 수는 남긴다. 줄 번호가 밀리면 근거(evidence)의
+                # 위치 정보가 쓸모없어지고, 따옴표까지 지우면 뒤따르는
+                # 코드가 문법적으로 이상해진다.
+                inner = chunk[len(quote) : max(len(quote), len(chunk) - len(quote))]
+                chunk = (
+                    quote
+                    + "".join("\n" if ch == "\n" else " " for ch in inner)
+                    + (quote if len(chunk) > len(quote) else "")
+                )
+            out.append(chunk)
             i = j
             continue
 
