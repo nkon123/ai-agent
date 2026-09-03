@@ -112,10 +112,15 @@ IFERR_MASTER_FIELDS = {
     "tar_sys": "TARSYS",       # 타겟 시스템
     "src_table": "SRCTNAME",   # 소스 테이블
     "tar_table": "TARTNAME",   # 타겟 테이블
+    # 스케줄. 하루 여러 번 도는 인터페이스는 행이 여러 개로 나오는데,
+    # IFID 로 묶어 "매일 08:30, 12:00, 18:00" 처럼 한 줄로 합쳐 보여준다.
+    "sch_day": "SCH_DAY",      # 일자 (매일이면 *)
+    "sch_h": "SCH_H",          # 시
+    "sch_m": "SCH_M",          # 분
 }
 
 # 자동 생성되는 SQL (참고)
-#     SELECT IFID, SRCSYS, TARSYS, SRCTNAME, TARTNAME
+#     SELECT IFID, SRCSYS, TARSYS, SRCTNAME, TARTNAME, SCH_DAY, SCH_H, SCH_M
 #       FROM {schema}IF_MST
 #      WHERE IFID = :if_key
 

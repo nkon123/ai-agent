@@ -884,3 +884,91 @@ def test_schema_prefix_is_validated(monkeypatch: Any):
     assert oracle.render_sql("SELECT * FROM {schema}IF_MST") == (
         "SELECT * FROM IF_MST"
     )
+
+
+# --------------------------------------------------------------------------
+# 스케줄 (하루 여러 번 도는 인터페이스)
+# --------------------------------------------------------------------------
+
+
+def test_schedule_text_groups_by_day():
+    """같은 일자의 시각은 한 줄로 묶는다."""
+    assert iferr._schedule_text([("*", "8", "30"), ("*", "12", "0")]) == (
+        "매일 08:30, 12:00"
+    )
+    assert iferr._schedule_text([("5", "3", "15")]) == "5일 03:15"
+    assert iferr._schedule_text([("*", "8", "30"), ("5", "3", "15")]) == (
+        "매일 08:30 / 5일 03:15"
+    )
+
+
+def test_schedule_text_dedups_and_sorts():
+    """같은 시각이 중복으로 들어오기도 한다. 순서도 고정한다."""
+    assert iferr._schedule_text(
+        [("*", "18", "0"), ("*", "8", "30"), ("*", "18", "0")]
+    ) == "매일 08:30, 18:00"
+
+
+def test_schedule_text_keeps_non_numeric():
+    """시/분에 '*' 가 들어가도 예외 없이 원문을 보여준다."""
+    assert iferr._schedule_text([("*", "*", "*")]) == "매일 *:*"
+    assert iferr._schedule_text([]) == ""
+
+
+def _master_fields_with_schedule() -> dict[str, str]:
+    return {
+        "id": "IFID", "src_sys": "SRCSYS", "tar_sys": "TARSYS",
+        "src_table": "SRCTNAME", "tar_table": "TARTNAME",
+        "sch_day": "SCH_DAY", "sch_h": "SCH_H", "sch_m": "SCH_M",
+    }
+
+
+def test_multiple_schedule_rows_group_into_one_interface(monkeypatch: Any):
+    """하루 여러 번 도는 인터페이스는 IFID 로 묶여 한 건이어야 한다.
+
+    묶지 않으면 같은 인터페이스가 여러 건으로 보여 '몇 개가 깨진 거지'를
+    셀 수 없다.
+    """
+    rows = [
+        {"IFID": "X1", "SRCSYS": "SAP", "TARSYS": "ERP", "SRCTNAME": "ZORDER",
+         "TARTNAME": "IF_ORD", "SCH_DAY": "*", "SCH_H": h, "SCH_M": m}
+        for h, m in (("8", "30"), ("12", "0"), ("18", "0"))
+    ]
+    _fake_master(monkeypatch, rows)
+    monkeypatch.setattr(iferr, "IFERR_MASTER_FIELDS", _master_fields_with_schedule())
+
+    c = run_iferr(key="X1", detail="full")["cases"][0]
+    assert len(c["flows"]) == 1                    # 3행 → 1건
+    assert c["flows"][0]["rows"] == 3              # 원 행 수는 남긴다
+    assert c["flows"][0]["schedule"] == "매일 08:30, 12:00, 18:00"
+    assert "SAP.ZORDER → ERP.IF_ORD (매일 08:30, 12:00, 18:00)" in c["impact"]
+
+
+def test_different_ifids_stay_separate(monkeypatch: Any):
+    """다른 IFID 는 묶이면 안 된다."""
+    rows = [
+        {"IFID": "X1", "SRCSYS": "SAP", "TARSYS": "ERP", "SRCTNAME": "A",
+         "TARTNAME": "B", "SCH_DAY": "*", "SCH_H": "8", "SCH_M": "0"},
+        {"IFID": "X2", "SRCSYS": "MES", "TARSYS": "ERP", "SRCTNAME": "C",
+         "TARTNAME": "D", "SCH_DAY": "5", "SCH_H": "3", "SCH_M": "0"},
+    ]
+    _fake_master(monkeypatch, rows)
+    monkeypatch.setattr(iferr, "IFERR_MASTER_FIELDS", _master_fields_with_schedule())
+
+    flows = run_iferr(key="X1", detail="full")["cases"][0]["flows"]
+    assert [f["id"] for f in flows] == ["X1", "X2"]
+    assert flows[1]["schedule"] == "5일 03:00"
+
+
+def test_schedule_reaches_summary(monkeypatch: Any):
+    """스케줄은 LLM 이 답할 때 필요한 정보라 summary 에도 있어야 한다."""
+    _fake_master(
+        monkeypatch,
+        [{"IFID": "X1", "SRCSYS": "SAP", "TARSYS": "ERP", "SRCTNAME": "A",
+          "TARTNAME": "B", "SCH_DAY": "*", "SCH_H": "9", "SCH_M": "5"}],
+    )
+    monkeypatch.setattr(iferr, "IFERR_MASTER_FIELDS", _master_fields_with_schedule())
+
+    s = run_iferr(key="X1", detail="summary")["cases"][0]
+    assert s["flows"][0]["schedule"] == "매일 09:05"
+    assert "매일 09:05" in s["impact"]

@@ -145,6 +145,15 @@ def test_build_master_sql_from_names():
     assert "WHERE IFID = :if_key" in sql
 
 
+def test_build_master_sql_includes_schedule_columns():
+    """스케줄 컬럼도 이름만 적으면 SELECT 에 들어간다."""
+    sql = config.build_master_sql(
+        "IF_MST",
+        {"id": "IFID", "sch_day": "SCH_DAY", "sch_h": "SCH_H", "sch_m": "SCH_M"},
+    )
+    assert "SELECT IFID, SCH_DAY, SCH_H, SCH_M" in sql
+
+
 def test_build_master_sql_skips_empty_fields():
     """사이트마다 있는 컬럼이 다르다. 빈 값은 SELECT 에서 빠진다."""
     sql = config.build_master_sql(

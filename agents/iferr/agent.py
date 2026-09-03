@@ -410,7 +410,14 @@ def assess(state: IfErrState) -> IfErrState:
             parts.append(" / ".join(_flow_text(f) for f in flows[:3]))
             if len(flows) > 3:
                 parts.append(f"외 {len(flows) - 3}건")
-        parts += [f"{name} {n}건" for name, n in counts.items()]
+        # header 는 스케줄 때문에 행이 여러 개로 나온다. 경로를 이미 보여
+        # 줬으면 행 수는 중복이라 빼고, 매핑이 없어 경로를 못 만든 경우에만
+        # 원 행 수를 보여 준다.
+        parts += [
+            f"{name} {n}건"
+            for name, n in counts.items()
+            if not (name == "header" and flows)
+        ]
         if status_summary:
             parts.append("상태 " + ", ".join(f"{k}={v}" for k, v in status_summary.items()))
 
@@ -423,31 +430,101 @@ def assess(state: IfErrState) -> IfErrState:
     return {"cases": state.get("cases") or []}
 
 
-def _master_summary(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
-    """마스터(IF_MST) 행에서 '무엇이 어디로 가는가'를 뽑는다.
+def _fmt_time(hour: str, minute: str) -> str:
+    """'8', '5' → '08:05'. 숫자가 아니면 원문을 그대로 둔다.
 
-    컬럼 이름은 사이트마다 다를 수 있어 config.IFERR_MASTER_FIELDS 로 매핑한다.
+    사이트에 따라 시/분에 '*' 같은 값이 들어가기도 한다. 억지로 숫자로
+    바꾸다 예외를 내는 것보다 원문을 보여 주는 편이 낫다.
+    """
+    h, m = (hour or "").strip(), (minute or "").strip()
+    if h.isdigit() and m.isdigit():
+        return f"{int(h):02d}:{int(m):02d}"
+    return ":".join(x for x in (h, m) if x) or ""
+
+
+def _schedule_text(entries: list[tuple[str, str, str]]) -> str:
+    """(일, 시, 분) 목록을 사람이 읽는 한 줄로 만든다.
+
+        [("*","8","30"), ("*","12","0")]  → "매일 08:30, 12:00"
+        [("5","3","15")]                  → "5일 03:15"
+        섞이면                              → "매일 08:30 / 5일 03:15"
+
+    같은 인터페이스가 하루 여러 번 도는 경우가 흔해, 행을 그대로 나열하면
+    화면과 LLM 컨텍스트가 금방 지저분해진다. 일자로 묶어 시각만 나열한다.
+    """
+    by_day: dict[str, list[str]] = {}
+    for day, hour, minute in entries:
+        day = (day or "").strip()
+        label = "매일" if day in ("*", "") else f"{day}일"
+        t = _fmt_time(hour, minute)
+        times = by_day.setdefault(label, [])
+        if t and t not in times:      # 같은 시각이 중복으로 들어오기도 한다
+            times.append(t)
+
+    parts: list[str] = []
+    # '매일'을 먼저, 그 다음 일자 순. 보는 사람이 기대하는 순서다.
+    for label in sorted(by_day, key=lambda x: (x != "매일", x)):
+        times = sorted(by_day[label])
+        parts.append(f"{label} {', '.join(times)}" if times else label)
+    return " / ".join(parts)
+
+
+def _master_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """마스터 행에서 '무엇이 어디로 가는가'와 스케줄을 뽑는다.
+
+    같은 IFID 가 스케줄 때문에 여러 행으로 나오므로 IFID 로 묶는다.
+    묶지 않으면 같은 인터페이스가 여러 건으로 보여 '몇 개가 깨진 거지'를
+    셀 수 없다.
+
+    컬럼 이름은 사이트마다 달라 config.IFERR_MASTER_FIELDS 로 매핑한다.
     조회 결과의 키는 대문자로 오므로 대소문자를 맞춰 찾는다.
     """
-    out: list[dict[str, str]] = []
+    groups: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+
     for row in rows:
         upper = {str(k).upper(): v for k, v in row.items()}
         item = {
             name: str(upper.get(str(col).upper(), "") or "")
             for name, col in IFERR_MASTER_FIELDS.items()
         }
-        if any(item.values()):
-            out.append(item)
+        if not any(item.values()):
+            continue
+
+        key = item.get("id") or f"__row{len(order)}"
+        if key not in groups:
+            groups[key] = {
+                "id": item.get("id", ""),
+                "src_sys": item.get("src_sys", ""),
+                "tar_sys": item.get("tar_sys", ""),
+                "src_table": item.get("src_table", ""),
+                "tar_table": item.get("tar_table", ""),
+                "rows": 0,
+                "_sched": [],
+            }
+            order.append(key)
+
+        g = groups[key]
+        g["rows"] += 1
+        sched = (item.get("sch_day", ""), item.get("sch_h", ""), item.get("sch_m", ""))
+        if any(x.strip() for x in sched):
+            g["_sched"].append(sched)
+
+    out: list[dict[str, Any]] = []
+    for key in order:
+        g = groups[key]
+        g["schedule"] = _schedule_text(g.pop("_sched"))
+        out.append(g)
     return out
 
 
-def _flow_text(m: dict[str, str]) -> str:
-    """'출발 → 도착'을 한 줄로. 영향 범위를 사람이 바로 읽을 수 있게."""
+def _flow_text(m: dict[str, Any]) -> str:
+    """'출발 → 도착 (스케줄)'을 한 줄로. 영향 범위를 바로 읽을 수 있게."""
     src = ".".join(x for x in (m.get("src_sys"), m.get("src_table")) if x)
     tar = ".".join(x for x in (m.get("tar_sys"), m.get("tar_table")) if x)
-    if src and tar:
-        return f"{src} → {tar}"
-    return src or tar or "경로 정보 없음"
+    flow = f"{src} → {tar}" if src and tar else (src or tar or "경로 정보 없음")
+    sched = m.get("schedule")
+    return f"{flow} ({sched})" if sched else flow
 
 
 def _summarize_status(rows: dict[str, list[dict[str, Any]]]) -> dict[str, int]:

@@ -206,16 +206,40 @@ IFERR_MASTER_FIELDS = {
     "tar_sys":   "TARSYS",     # 타겟 시스템
     "src_table": "SRCTNAME",   # 소스 테이블
     "tar_table": "TARTNAME",   # 타겟 테이블
+    "sch_day":   "SCH_DAY",    # 스케줄 일자 (매일이면 *)
+    "sch_h":     "SCH_H",      # 시
+    "sch_m":     "SCH_M",      # 분
 }
 ```
 
 이렇게 만들어진다.
 
 ```sql
-SELECT IFID, SRCSYS, TARSYS, SRCTNAME, TARTNAME
+SELECT IFID, SRCSYS, TARSYS, SRCTNAME, TARTNAME, SCH_DAY, SCH_H, SCH_M
   FROM {schema}IF_MST
  WHERE IFID = :if_key
 ```
+
+**스케줄이 여러 개면 행이 여러 개로 나온다.** `IFID` 로 묶어 한 건으로 만들고
+스케줄만 한 줄로 합친다. 묶지 않으면 같은 인터페이스가 여러 건으로 보여
+"몇 개가 깨진 거지"를 셀 수 없다.
+
+```
+IFID          SRCSYS  ...  SCH_DAY  SCH_H  SCH_M
+EAIIF0001234  SAP     ...  *        8      30
+EAIIF0001234  SAP     ...  *        12     0        →  1건으로 묶임
+EAIIF0001234  SAP     ...  *        18     0
+```
+```
+EAIIF0001234: found — SAP.ZORDER_OUT → ERP.IF_ORDER_TMP (매일 08:30, 12:00, 18:00)
+```
+
+| 원본 | 표시 |
+|---|---|
+| `*` / 8 / 30 | `매일 08:30` |
+| 5 / 3 / 15 | `5일 03:15` |
+| 둘 다 있으면 | `매일 08:30 / 5일 03:15` |
+| 시·분이 숫자가 아니면 | 원문 그대로 (`매일 *:*`) |
 
 없는 컬럼은 비워 두면 `SELECT` 목록에서 빠진다. `id` 만 필수다.
 `{schema}` 는 `ORACLE_SCHEMA` 로 치환된다 — 접속 계정과 테이블 소유자가

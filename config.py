@@ -231,6 +231,11 @@ IFERR_MASTER_FIELDS: Dict[str, str] = {
     "tar_sys": _env_str("IFERR_FIELD_TAR_SYS", ""),
     "src_table": _env_str("IFERR_FIELD_SRC_TABLE", ""),
     "tar_table": _env_str("IFERR_FIELD_TAR_TABLE", ""),
+    # 스케줄. 하루에 여러 번 도는 인터페이스는 행이 여러 개로 나오므로
+    # IFID 로 묶고 스케줄만 한 줄로 합친다.
+    "sch_day": _env_str("IFERR_FIELD_SCH_DAY", ""),   # 일자. 매일이면 *
+    "sch_h": _env_str("IFERR_FIELD_SCH_H", ""),       # 시
+    "sch_m": _env_str("IFERR_FIELD_SCH_M", ""),       # 분
 }
 
 # 조회 결과에서 상태로 볼 컬럼 후보. 있으면 값별로 집계해 보여준다.
