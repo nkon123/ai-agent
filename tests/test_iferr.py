@@ -632,6 +632,27 @@ def test_find_value_uses_bind_for_the_value(monkeypatch: Any):
     assert '"ERP"."IF_HDR"' in count_sql["sql"]
 
 
+def test_find_value_reports_truncated_candidates(monkeypatch: Any):
+    """후보를 잘랐으면 그 사실이 결과에 남아야 한다.
+
+    조용히 자르면 '없다'로 읽히는데, 안 본 컬럼에 있을 수 있다.
+    """
+    from core import oracle
+
+    def fake_query(sql: str, binds: Any = None, timeout: Any = None):
+        if "all_tab_columns" in sql:
+            return [
+                {"OWNER": "ERP", "TABLE_NAME": f"T{i}", "COLUMN_NAME": "IF_KEY"}
+                for i in range(10)
+            ]
+        return [{"CNT": 0}]
+
+    monkeypatch.setattr(oracle, "query", fake_query)
+    hits = oracle.find_value("X", schema="ERP", max_tables=3)
+    notes = [h for h in hits if h.get("error")]
+    assert notes and "후보 10개 중 3개만" in notes[0]["error"]
+
+
 def test_find_value_reports_unreadable_columns(monkeypatch: Any):
     """권한 없는 테이블을 조용히 넘기면 '없다'로 오해한다."""
     from core import oracle

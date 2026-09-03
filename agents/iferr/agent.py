@@ -618,6 +618,8 @@ if __name__ == "__main__":
                     help="이 값이 들어 있는 테이블·컬럼 찾기 (예: EAIIF0001234)")
     ap.add_argument("--like", default="IF", metavar="NAME",
                     help="--find-key 가 뒤질 컬럼 이름 조각 (기본 IF)")
+    ap.add_argument("--max-tables", type=int, default=60, metavar="N",
+                    help="--find-key 가 확인할 컬럼 수 상한 (기본 60)")
     args = ap.parse_args()
 
     # ---- 진단 모드 ---------------------------------------------------------
@@ -672,7 +674,9 @@ if __name__ == "__main__":
 
         print(f"'{args.find_key}' 를 이름에 '{args.like}' 가 든 문자형 컬럼에서 찾는다...")
         try:
-            hits = find_value(args.find_key, name_like=args.like)
+            hits = find_value(
+                args.find_key, name_like=args.like, max_tables=args.max_tables
+            )
         except Exception as e:
             print(f"[조회 실패] {type(e).__name__}: {e}")
             raise SystemExit(1)

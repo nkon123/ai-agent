@@ -232,6 +232,20 @@ def find_value(
     )
 
     hits: list[dict[str, Any]] = []
+    if len(candidates) > max_tables:
+        # 후보를 잘랐다는 사실을 결과에 남긴다. 조용히 자르면 '없다'로
+        # 읽히는데, 실제로는 안 본 컬럼에 있을 수 있다.
+        hits.append(
+            {
+                "table": "(안내)",
+                "column": "",
+                "count": None,
+                "error": (
+                    f"후보 {len(candidates)}개 중 {max_tables}개만 확인했다 — "
+                    "--max-tables 를 늘리거나 --like 로 범위를 좁힐 것"
+                ),
+            }
+        )
     for c in candidates[:max_tables]:
         tab = f"{_quote_ident(c['OWNER'])}.{_quote_ident(c['TABLE_NAME'])}"
         col = _quote_ident(c["COLUMN_NAME"])
