@@ -17,6 +17,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import pytest  # noqa: E402
 from mcp.client.client import Client  # noqa: E402
 from mcp.types import LATEST_PROTOCOL_VERSION  # noqa: E402
 
@@ -104,8 +105,6 @@ def test_resource_returns_full_detail():
 
 def test_registry_rejects_duplicate_names():
     """같은 이름이 두 번 등록되면 LLM 이 어느 쪽을 부를지 알 수 없다."""
-    import pytest
-
     from mcp_server.tools import register
 
     with pytest.raises(ValueError):
@@ -179,8 +178,6 @@ def test_detail_uri_must_be_percent_encoded() -> None:
     async def read_raw(c: Client) -> Any:
         return await c.read_resource("echo://detail/왜 안 되지?")
 
-    import pytest
-
     with pytest.raises(Exception):
         _run(_with_client(read_raw))
 
@@ -196,3 +193,62 @@ def test_resource_proxy_builds_uri_from_template() -> None:
     assert fill_uri("echo://detail/{text}", text="a/b?c") == (
         "echo://detail/a%2Fb%3Fc"
     )
+
+
+def test_tiers_are_declared_on_every_tool() -> None:
+    """모든 툴은 combo(통합) 또는 step(단계별) 중 하나여야 한다."""
+
+    async def check(c: Client) -> Any:
+        return (await c.list_tools()).tools
+
+    tools = _run(_with_client(check))
+    tiers = {t.name: t.meta.get("tier") for t in tools}
+    assert all(v in ("combo", "step") for v in tiers.values()), tiers
+    # 통합 툴과 단계별 툴이 둘 다 있어야 한다 — 그게 이 구조의 목적이다.
+    assert "combo" in tiers.values() and "step" in tiers.values()
+    assert tiers["check_interface_errors"] == "combo"
+    assert tiers["lookup_interface"] == "step"
+
+
+def test_registry_rejects_unknown_tier() -> None:
+    from mcp_server.tools import register
+
+    with pytest.raises(ValueError):
+
+        @register(label="이상한 등급", tier="whatever")
+        def weird_tool(x: str) -> str:
+            """이상한"""
+            return ""
+
+
+def test_bridge_hides_step_tools_from_chat(monkeypatch: Any) -> None:
+    """로컬 소형 모델에는 통합 툴만 보여 준다.
+
+    툴을 여러 개 보여 주면 순서대로 부르지 못한다(첫 툴만 부르고 끝내거나
+    인자를 잃어버린다). 숨기는 책임은 클라이언트에 있다 — MCP 서버는
+    다른 호스트를 위해 전부 노출한다.
+    """
+    from app import mcp_bridge
+
+    monkeypatch.setattr(config, "CHAT_TOOL_TIERS", ("combo",))
+    bridge = mcp_bridge.MCPBridge()
+    bridge._specs = [
+        {"name": "combo_tool", "tier": "combo", "hint": "통합 지침", "destructive": False},
+        {"name": "step_tool", "tier": "step", "hint": "단계 지침", "destructive": False},
+    ]
+    # 시스템 프롬프트에도 숨긴 툴의 지침이 들어가면 안 된다.
+    # 없는 툴을 부르라고 시키는 꼴이 된다.
+    hints = bridge.hints()
+    assert "통합 지침" in hints and "단계 지침" not in hints
+
+
+def test_bridge_can_open_all_tiers(monkeypatch: Any) -> None:
+    """큰 모델로 바꾸면 CHAT_TOOL_TIERS 로 단계별 툴도 열 수 있다."""
+    from app import mcp_bridge
+
+    monkeypatch.setattr(config, "CHAT_TOOL_TIERS", ("combo", "step"))
+    bridge = mcp_bridge.MCPBridge()
+    bridge._specs = [
+        {"name": "step_tool", "tier": "step", "hint": "단계 지침", "destructive": False},
+    ]
+    assert "단계 지침" in bridge.hints()

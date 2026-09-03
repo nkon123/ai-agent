@@ -269,3 +269,72 @@ def test_mcp_resource_returns_full_detail(monkeypatch: Any):
     data = json.loads(_run(_with_client(read)).contents[0].text)
     assert data["cases"][0]["key"] == "IF_ORD_SEND"
     assert data["cases"][0]["db"]["rows"]["header"]
+
+
+# --------------------------------------------------------------------------
+# 단계별 툴 (tier="step")
+# --------------------------------------------------------------------------
+
+
+def test_step_tool_list_error_mails_does_not_touch_db(monkeypatch: Any):
+    """메일 목록 툴은 DB 를 건드리지 않는다."""
+
+    def boom(*a: Any, **k: Any):
+        raise AssertionError("DB 를 조회하면 안 된다")
+
+    monkeypatch.setattr(iferr.oracle, "query", boom)
+
+    async def call(c: Client) -> Any:
+        return await c.call_tool("list_error_mails", {"hours": 24})
+
+    text = _run(_with_client(call)).content[0].text
+    assert "IF_ORD_SEND" in text
+    assert "오류 3통" in text
+    # 발신자는 마스킹된 채로 나가야 한다.
+    assert "***" in text and "if.monitor@" not in text
+
+
+def test_step_tool_extract_keys_is_pure():
+    """텍스트만 받는 툴이라 메일함도 DB 도 필요 없다."""
+
+    async def call(c: Client) -> Any:
+        return await c.call_tool(
+            "extract_interface_keys", {"text": "IF_ID : IF_ORD_SEND 오류"}
+        )
+
+    text = _run(_with_client(call)).content[0].text
+    assert "IF_ORD_SEND" in text and "if-id-labeled" in text
+
+
+def test_step_tool_extract_keys_says_not_found():
+    """못 찾은 것을 '키가 없다'로 단정하지 않는다 — 패턴이 다를 수 있다."""
+
+    async def call(c: Client) -> Any:
+        return await c.call_tool("extract_interface_keys", {"text": "응답 없음"})
+
+    text = _run(_with_client(call)).content[0].text
+    assert "찾지 못했다" in text and "IFERR_KEY_PATTERNS" in text
+
+
+def test_step_tool_lookup_does_not_read_mail(monkeypatch: Any):
+    """키를 아는 경우 사서함을 훑지 않는다."""
+
+    def boom(*a: Any, **k: Any):
+        raise AssertionError("메일을 읽으면 안 된다")
+
+    monkeypatch.setattr(iferr, "read_mails", boom)
+    _fake_db(monkeypatch, [{"IF_KEY": "IF_ORD_SEND", "STATUS": "E"}])
+
+    async def call(c: Client) -> Any:
+        return await c.call_tool("lookup_interface", {"key": "IF_ORD_SEND"})
+
+    text = _run(_with_client(call)).content[0].text
+    assert "IF_ORD_SEND" in text and "확인됨" in text
+
+
+def test_combo_and_step_agree(monkeypatch: Any):
+    """통합 툴과 단계별 툴이 같은 함수를 재사용하므로 결과가 어긋나면 안 된다."""
+    _fake_db(monkeypatch, [{"IF_KEY": "IF_ORD_SEND", "STATUS": "E"}])
+    combo = run_iferr(key="IF_ORD_SEND", detail="summary")["cases"][0]
+    step = iferr.lookup_key("IF_ORD_SEND", detail="summary")["cases"][0]
+    assert combo == step

@@ -7,7 +7,10 @@ from __future__ import annotations
 
 import json
 
+from config import SOURCE_ROOTS
+
 from agents.usage import run_usage
+from agents.usage.agent import scan_files
 
 from . import mcp, register
 
@@ -25,6 +28,7 @@ from . import mcp, register
         "그대로 사용자에게 전달하라."
     ),
     read_only=True,
+    tier="combo",
 )
 def find_usage(name: str, root: str = "") -> str:
     """소스 트리에서 식별자가 실제로 쓰인 곳을 찾는다.
@@ -67,3 +71,23 @@ def find_usage(name: str, root: str = "") -> str:
 def usage_detail(root: str, name: str) -> str:
     """화면 표시용 전체 데이터. LLM 컨텍스트를 거치지 않는다."""
     return json.dumps(run_usage(name, root=root, detail="full"), ensure_ascii=False)
+
+
+@register(
+    label="소스 루트 목록 (usage)",
+    view="table",
+    hint="list_source_roots 는 어떤 소스 루트가 설정되어 있는지 확인할 때 쓴다.",
+    read_only=True,
+    tier="step",
+)
+def list_source_roots() -> str:
+    """설정된 소스 루트와 각 루트의 스캔 대상 파일 수를 본다.
+
+    검색 결과가 비었을 때 '루트 설정이 잘못된 것인지'를 먼저 가른다.
+    """
+    lines = []
+    for label, path in SOURCE_ROOTS.items():
+        files = scan_files(path)
+        state = f"{len(files)}개 파일" if files else "스캔 대상 없음 — 경로 확인 필요"
+        lines.append(f"- {label}: {path} ({state})")
+    return "\n".join(lines) or "설정된 소스 루트가 없다"

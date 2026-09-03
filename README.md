@@ -99,6 +99,24 @@ tests/              core/ + MCP 회귀 테스트
 | `agents/<name>/agent.py` | LangGraph 흐름, `run_xxx()`, CLI. MCP 를 모른다 |
 | `mcp_server/tools/<name>.py` | MCP 툴/리소스 등록. **얇게** |
 
+### 등록된 툴
+
+| 툴 | 등급 | 무엇 |
+|---|---|---|
+| `check_interface_errors` | combo | 오류 메일 → 키 → DB → 영향까지 한 번에 |
+| `find_usage` | combo | 소스에서 식별자 사용처 찾기 |
+| `echo_classify` | combo | 문장 분류 (샘플) |
+| `list_error_mails` | step | 메일만 (DB 안 붙음) |
+| `extract_interface_keys` | step | 텍스트 → 키 (메일·DB 안 붙음) |
+| `lookup_interface` | step | 키 하나만 DB 확인 (메일 안 읽음) |
+| `list_source_roots` | step | 소스 루트와 파일 수 |
+| `describe_settings` | step | 서버가 보고 있는 설정 |
+| `check_llm_status` | step | Ollama 연결·모델 확인 |
+
+`step` 툴은 챗봇 대화에는 안 뜨지만 `/api/tools` 목록과 다른 MCP 호스트에서는
+보인다. "왜 결과가 비었나"를 가를 때 `describe_settings` → `list_source_roots`
+→ `check_llm_status` 순으로 확인하면 대개 원인이 나온다.
+
 에이전트와 챗봇은 **프로세스가 분리**되어 있고 MCP 로만 통신한다.
 덕분에 (1) 다른 MCP 호스트에서도 같은 툴을 쓰고, (2) 에이전트가 죽어도
 챗봇은 살아 있고, (3) 에이전트를 다른 장비로 옮겨도 transport 만 바꾸면 된다.
@@ -163,7 +181,8 @@ from . import mcp, register
 @register(label="내 에이전트", view="text",
           detail_uri="myagent://detail/{arg}",
           hint="myagent_run 은 ... 할 때만 쓴다.",
-          read_only=True)          # 파괴적이면 destructive=True
+          read_only=True,          # 파괴적이면 destructive=True
+          tier="combo")            # 단계별 툴이면 tier="step"
 def myagent_run(arg: str) -> str:
     """LLM 이 읽는 설명. 언제 이 툴을 쓰는지 여기에 쓴다."""
     return str(run_myagent(arg, detail="summary"))   # summary!
@@ -211,10 +230,28 @@ calling 이 자주 깨지지만 `json_schema` 는 문법을 강제한다.
 
 `config.USE_LLM` 이 False 면 LLM 없이 규칙만으로 동작해야 한다.
 
-### 에이전트당 툴은 하나만 노출
+### 툴 등급 — 통합 툴과 단계별 툴
 
-소형 모델은 툴을 순서대로 여러 개 부르지 못한다. 내부 단계는 일반 함수로
-두고 등록하지 않는다. 툴 파일에는 로직을 넣지 않는다.
+기능별로 툴을 잘게 나누면 다른 MCP 호스트에서 쓰기 좋다. 하지만 **로컬
+소형 모델은 툴을 순서대로 여러 개 부르지 못한다** (첫 툴만 부르고 끝내거나
+인자를 잃어버린다). 그래서 두 종류를 함께 두고 **클라이언트가 거른다.**
+
+```python
+@register(..., tier="combo")   # 한 번 호출로 끝나는 통합 툴 → 챗봇에 노출
+@register(..., tier="step")    # 단계별 툴 → 챗봇에는 숨김
+```
+
+MCP 서버는 **둘 다 노출한다.** 숨기는 쪽은 클라이언트다
+(`config.CHAT_TOOL_TIERS`, 기본 `"combo"`). Claude Code·IDE 같은 다른
+호스트에서는 단계별 툴을 그대로 쓸 수 있어야 하기 때문이다.
+
+```bash
+CHAT_TOOL_TIERS=combo,step python app/app.py   # 큰 모델로 바꾸면 전부 열기
+```
+
+통합 툴과 단계별 툴은 **같은 에이전트 함수를 재사용한다.** 그래야 어느
+쪽으로 불러도 결과가 같다(테스트로 고정되어 있다). 툴 파일에는 로직을
+넣지 않는다.
 
 ### MCP 메타데이터는 `_meta` 와 annotations 로
 

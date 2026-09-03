@@ -420,6 +420,58 @@ def run_iferr(
     }
 
 
+# --------------------------------------------------------------------------
+# 단계별 진입점 — MCP 에서 기능별 툴로 노출한다
+#
+# run_iferr() 가 전체를 한 번에 도는 통합 경로이고, 아래 둘은 그 중간
+# 단계만 따로 부르는 경로다. 같은 함수를 재사용하므로 통합 실행과
+# 단계별 실행의 결과가 어긋나지 않는다.
+# --------------------------------------------------------------------------
+
+
+def list_mails(hours: int | None = None, detail: Detail = "full") -> dict[str, Any]:
+    """메일만 읽는다. DB 는 건드리지 않는다.
+
+    '메일이 오긴 왔는지' 부터 확인할 때 쓴다. 발신자는 마스킹된다.
+    """
+    state = collect({"hours": hours})
+    if state.get("rule") == "mail-unavailable":
+        return {"mail_count": 0, "mails": [], "warnings": state.get("warnings") or []}
+
+    rows: list[dict[str, Any]] = []
+    for m in state.get("mails") or []:
+        keys = extract_keys(f"{m.subject}\n{m.body}") if is_error_mail(m) else []
+        rows.append(
+            {
+                "subject": m.subject,
+                "received": m.received.isoformat() if m.received else "",
+                "sender": m.sender_masked,
+                "is_error": is_error_mail(m),
+                "keys": [k["key"] for k in keys],
+            }
+        )
+
+    if detail != "full":
+        # 본문은 애초에 담지 않았지만, 요약에서는 제목도 잘라 컨텍스트를 아낀다.
+        rows = [{**r, "subject": r["subject"][:60]} for r in rows[:20]]
+
+    return {
+        "mail_count": len(state.get("mails") or []),
+        "error_count": sum(1 for r in rows if r["is_error"]),
+        "mails": rows,
+        "warnings": state.get("warnings") or [],
+    }
+
+
+def lookup_key(key: str, detail: Detail = "full") -> dict[str, Any]:
+    """메일을 읽지 않고 키 하나만 DB 에서 확인한다.
+
+    이미 키를 아는 경우(사람이 메일을 보고 왔거나, 다른 툴이 뽑아 준 경우)
+    사서함을 훑을 이유가 없다.
+    """
+    return run_iferr(key=key, detail=detail)
+
+
 if __name__ == "__main__":
     import argparse
     import json

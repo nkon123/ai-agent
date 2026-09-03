@@ -112,8 +112,16 @@ class MCPBridge:
             )
         )
         listed = await self._client.list_tools()
-        self._tools = [self._to_langchain(t) for t in listed.tools]
         self._specs = [_spec_of(t) for t in listed.tools]
+        # 챗봇에 넘길 툴은 등급으로 거른다. 서버는 단계별 툴도 노출하지만
+        # 로컬 소형 모델에 열 개를 보여 주면 순서대로 부르지 못한다.
+        # 숨기는 책임은 클라이언트에 있다 — 다른 MCP 호스트는 전부 봐야 한다.
+        allowed = set(config.CHAT_TOOL_TIERS)
+        self._tools = [
+            self._to_langchain(t)
+            for t in listed.tools
+            if _spec_of(t)["tier"] in allowed
+        ]
 
     async def _decline_elicitation(self, context: Any, params: Any) -> Any:
         """서버가 사람에게 무언가를 물으면 기본적으로 거절한다.
@@ -145,8 +153,11 @@ class MCPBridge:
         파괴적 툴에는 확인 문구를 자동으로 덧붙인다. 툴을 만든 사람이
         이 문구를 깜빡해도 안전 규칙이 프롬프트에서 빠지지 않도록.
         """
+        allowed = set(config.CHAT_TOOL_TIERS)
         lines: list[str] = []
         for s in self._specs:
+            if s.get("tier") not in allowed:
+                continue          # 챗봇에 없는 툴의 지침을 프롬프트에 넣지 않는다
             note = s.get("hint", "")
             if s.get("destructive"):
                 note = (note + " 이 툴은 되돌리기 어려운 동작이다. "
@@ -241,6 +252,8 @@ def _spec_of(mcp_tool: Any) -> dict[str, Any]:
         "view": meta.get("view", "text"),
         "detail_uri": meta.get("detail_uri", ""),
         "hint": meta.get("hint", ""),
+        "tier": meta.get("tier", "combo"),
+        "in_chat": meta.get("tier", "combo") in set(config.CHAT_TOOL_TIERS),
         "read_only": bool(getattr(ann, "read_only_hint", False)) if ann else False,
         "destructive": bool(getattr(ann, "destructive_hint", False)) if ann else False,
     }

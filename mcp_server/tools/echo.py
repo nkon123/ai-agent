@@ -27,6 +27,7 @@ from . import mcp, register
         "text 인자에는 사용자 문장을 요약하지 말고 원문 그대로 넣어라."
     ),
     read_only=True,
+    tier="combo",
 )
 def echo_classify(text: str) -> str:
     """문장을 질문/명령/평서로 분류하고 한마디 덧붙인다.

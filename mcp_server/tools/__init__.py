@@ -29,6 +29,18 @@ MCP 스펙 리비전 2026-07-28 기준. 툴 하나를 추가할 때 서버 코�
     readOnly/destructive 는 표준 annotations 다. 우리 챗봇뿐 아니라
     다른 MCP 호스트(IDE 등)도 이 힌트를 읽고 확인 절차를 넣는다.
     파괴적 동작에는 반드시 destructive=True 를 줄 것(안전 규칙).
+
+툴 등급(tier) — 왜 필요한가:
+    기능별로 툴을 잘게 나누면 다른 MCP 호스트에서 쓰기 좋다. 하지만
+    로컬 소형 모델은 툴을 순서대로 여러 개 부르지 못한다(첫 툴만 부르고
+    끝내거나 인자를 잃어버린다). 그래서 두 종류를 함께 둔다.
+
+        tier="combo" : 한 번 호출로 끝나는 통합 툴. 챗봇에 노출한다
+        tier="step"  : 단계별 툴. 서버는 노출하되 챗봇에는 숨긴다
+
+    MCP 서버는 둘 다 내보낸다 — 숨기는 쪽은 클라이언트다
+    (config.CHAT_TOOL_TIERS, app/mcp_bridge.py). 다른 호스트에서는
+    단계별 툴을 그대로 쓸 수 있어야 하기 때문이다.
 """
 
 from __future__ import annotations
@@ -71,6 +83,7 @@ def register(
     read_only: bool = True,
     destructive: bool = False,
     idempotent: bool = True,
+    tier: str = "combo",
     name: str | None = None,
 ) -> Callable[[F], F]:
     """MCP 툴로 등록하는 데코레이터.
@@ -84,10 +97,15 @@ def register(
     read_only   : 외부 상태를 바꾸지 않는가
     destructive : 파일 삭제·메일 발송·DML 처럼 되돌리기 어려운가.
                   True 면 클라이언트가 자동 실행을 막고 사람 확인을 받는다.
+    tier        : "combo" 는 한 번 호출로 끝나는 통합 툴(챗봇에 노출),
+                  "step" 은 단계별 툴(챗봇에는 숨기고 다른 MCP 호스트용).
+                  소형 모델에 툴을 여럿 보여 주면 순서대로 부르지 못한다.
     """
 
     def deco(fn: F) -> F:
         tool_name = name or fn.__name__
+        if tier not in ("combo", "step"):
+            raise ValueError(f"tier 는 combo | step 이어야 한다: {tier}")
         if any(e["name"] == tool_name for e in _REGISTRY):
             # 같은 이름이 두 번 등록되면 LLM 이 어느 쪽을 부를지 알 수 없다.
             # 조용히 덮어쓰지 않고 즉시 실패시킨다.
@@ -101,6 +119,7 @@ def register(
                 "detail_uri": detail_uri,
                 "hint": hint.strip(),
                 "destructive": destructive,
+                "tier": tier,
             }
         )
 
@@ -120,6 +139,7 @@ def register(
                 "view": view,
                 "detail_uri": detail_uri,
                 "hint": hint.strip(),
+                "tier": tier,
             },
         )(fn)
 

@@ -93,11 +93,25 @@ SQL 이 비어 있으면 키 추출까지만 하고 **"확인 불가"** 로 남�
 
 ## MCP
 
-| MCP | 무엇 |
+기능별로 나눈 단계별 툴과, 한 번에 도는 통합 툴을 함께 둔다.
+**같은 에이전트 함수를 재사용**하므로 어느 쪽으로 불러도 결과가 같다.
+
+| 툴 | 등급 | 메일 | DB | 무엇 |
+|---|---|---|---|---|
+| `check_interface_errors(hours, key)` | combo | ○ | ○ | 전체를 한 번에 |
+| `list_error_mails(hours)` | step | ○ | ✕ | 메일이 오긴 왔는지 |
+| `extract_interface_keys(text)` | step | ✕ | ✕ | 붙여 넣은 본문에서 키만 |
+| `lookup_interface(key)` | step | ✕ | ○ | 키를 이미 알 때 |
+
+챗봇(로컬 소형 모델)에는 **combo 만 보인다** — 툴을 여러 개 주면 순서대로
+부르지 못한다. step 툴은 MCP 서버가 그대로 노출하므로 Claude Code·IDE
+같은 다른 호스트에서 쓴다 (`CHAT_TOOL_TIERS=combo,step` 으로 챗봇에도 열 수 있다).
+
+| 리소스 | 무엇 |
 |---|---|
-| 툴 `check_interface_errors(hours, key)` | `detail="summary"` — 키별 한 줄 |
-| 리소스 `iferr://detail/{key}` | `detail="full"` — 메일 목록 + 조회 행 전부 |
-| annotations | `readOnly=true`, `destructive=false` |
+| `iferr://detail/{key}` | `detail="full"` — 메일 목록 + 조회 행 전부 |
+
+annotations: `readOnly=true`, `destructive=false`
 
 ```
 GET /api/resource?template=iferr://detail/{key}&key=IF_ORD_SEND

@@ -17,6 +17,9 @@
   .tool b { display:block; font-size:13px; }
   .tool span { color:#777; font-size:12px; }
   .tool em { font-style:normal; font-size:11px; color:#b45309; }
+  .tool.step { opacity:.65; }
+  .tool i { font-style:normal; font-size:11px; color:#666; }
+  aside h3 { font-size:12px; color:#888; margin:18px 0 8px; font-weight:600; }
   #mcp { font-size:11px; color:#999; margin-top:16px; }
   .warn { background:#fff7e6; border:1px solid #f0d9a8; }
   main { flex:1; display:flex; flex-direction:column; }
@@ -73,15 +76,25 @@ fetch("/api/tools").then(r => r.json()).then(d => {
       "MCP " + d.mcp.protocol + " · " + d.mcp.transport + " · " + d.mcp.server;
   }
   if (!d.tools.length) { box.textContent = "(없음)"; return; }
-  for (const t of d.tools) {
+  // 챗봇에 노출된 툴과 그렇지 않은 툴을 나눠 보여 준다. 목록에 있는데
+  // 모델이 안 부르는 이유를 화면에서 바로 알 수 있어야 한다.
+  const render = (t) => {
     const el = document.createElement("div");
-    el.className = "tool";
-    el.innerHTML = "<b></b><span></span><em></em>";
+    el.className = "tool" + (t.in_chat ? "" : " step");
+    el.innerHTML = "<b></b><span></span><em></em><i></i>";
     el.querySelector("b").textContent = t.label;
     el.querySelector("span").textContent = t.description || t.name;
-    // 되돌리기 어려운 툴은 눈에 띄게 표시한다.
     if (t.destructive) el.querySelector("em").textContent = "⚠ 확인 필요 동작";
+    if (!t.in_chat) el.querySelector("i").textContent = "단계별 — 대화에는 미노출";
     box.appendChild(el);
+  };
+  d.tools.filter(t => t.in_chat).forEach(render);
+  const steps = d.tools.filter(t => !t.in_chat);
+  if (steps.length) {
+    const h = document.createElement("h3");
+    h.textContent = "단계별 툴 (MCP 호스트용)";
+    box.appendChild(h);
+    steps.forEach(render);
   }
 });
 

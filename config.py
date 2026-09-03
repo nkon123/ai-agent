@@ -177,6 +177,14 @@ MCP_SERVER_URL: str = _env_str(
     "MCP_SERVER_URL", f"http://{MCP_HTTP_HOST}:{MCP_HTTP_PORT}/mcp"
 )
 
+# 챗봇(로컬 LLM)에 노출할 툴 등급.
+# 소형 모델은 툴을 순서대로 여러 개 부르지 못하므로 기본은 통합 툴만 준다.
+# MCP 서버는 단계별 툴도 그대로 노출하므로 Claude Code·IDE 등 다른 호스트에서는
+# 전부 쓸 수 있다. 큰 모델로 바꾸면 "combo,step" 으로 열면 된다.
+CHAT_TOOL_TIERS: tuple[str, ...] = tuple(
+    t.strip() for t in _env_str("CHAT_TOOL_TIERS", "combo").split(",") if t.strip()
+)
+
 # 툴 한 번 호출의 상한. 로컬 LLM 이 물고 늘어질 때 요청 스레드가
 # 무한정 잡히는 것을 막는다.
 MCP_TOOL_TIMEOUT_SEC: int = _env_int("MCP_TOOL_TIMEOUT_SEC", 120)
