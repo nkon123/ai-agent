@@ -12,3 +12,12 @@ MAIL_BACKEND=eml python agents/iferr/agent.py
 | `02_stock_error.eml` | **euc-kr 본문** + `인터페이스 ID:` 한글 라벨 |
 | `03_no_key.eml` | 오류 메일인데 키가 없다 → "확인 필요"로 남아야 한다 |
 | `04_normal.eml` | 키는 있지만 정상 처리 보고 → 대상이 아니어야 한다 |
+| `05_eaa_alert.eml` | `(EAA) Alert Mail` 머리말 — `startswith` 모드 |
+| `06_eaa_forwarded.eml` | `RE: FW:` 가 붙은 전달 알림 → 그래도 잡혀야 한다 |
+| `07_mentions_eaa.eml` | 제목 중간에 머리말 언급 → `startswith` 에서는 빠져야 한다 |
+
+```bash
+MAIL_BACKEND=eml MAIL_SUBJECT_MATCH=startswith \
+  MAIL_SUBJECT_KEYWORDS="(EAA) Alert Mail" \
+  python agents/iferr/agent.py --mails
+```

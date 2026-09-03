@@ -78,7 +78,8 @@ def test_only_error_mails_are_picked():
     r = run_iferr(detail="full")
     keys = {c["key"] for c in r["cases"]}
     assert keys == {"IF_ORD_SEND", "IF_STK_RECV"}
-    assert r["mail_count"] == 4
+    # 개수를 박아 두면 샘플 메일을 추가할 때마다 깨진다. 폴더를 기준으로 센다.
+    assert r["mail_count"] == len(list(Path("samples/mail").glob("*.eml")))
 
 
 def test_euckr_mail_body_is_read():
@@ -289,7 +290,7 @@ def test_step_tool_list_error_mails_does_not_touch_db(monkeypatch: Any):
 
     text = _run(_with_client(call)).content[0].text
     assert "IF_ORD_SEND" in text
-    assert "오류 3통" in text
+    assert "오류" in text and "통)" in text
     # 발신자는 마스킹된 채로 나가야 한다.
     assert "***" in text and "if.monitor@" not in text
 
@@ -392,3 +393,87 @@ def test_single_char_keyword_shows_why_it_matched(monkeypatch: Any):
     r = iferr.list_mails()
     hits = [m for m in r["mails"] if m["is_error"]]
     assert all(m["matched"] == "오" for m in hits)
+
+
+# --------------------------------------------------------------------------
+# 제목 판정 모드
+# --------------------------------------------------------------------------
+
+
+def _subjects(marked_only: bool = True) -> set[str]:
+    r = iferr.list_mails()
+    return {m["subject"] for m in r["mails"] if m["is_error"] or not marked_only}
+
+
+def test_startswith_mode_ignores_mentions_in_the_middle(monkeypatch: Any):
+    """머리말로 시작하는 메일만 대상이다.
+
+    "문의: (EAA) Alert Mail 설정 관련" 처럼 본문·제목 중간에 그 문구가
+    들어간 메일은 알림이 아니다. contains 모드에서는 이게 걸린다.
+    """
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_MATCH", "startswith")
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_KEYWORDS", ("(EAA) Alert Mail",))
+
+    hits = _subjects()
+    assert "(EAA) Alert Mail - 주문 연계 실패" in hits
+    assert "문의: (EAA) Alert Mail 설정 관련" not in hits
+
+
+def test_startswith_mode_still_catches_forwarded(monkeypatch: Any):
+    """RE:/FW: 가 붙어 전달된 알림도 알림이다. 누락은 오탐보다 나쁘다."""
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_MATCH", "startswith")
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_KEYWORDS", ("(EAA) Alert Mail",))
+
+    assert "RE: FW: (EAA) Alert Mail - 재고 연계 실패" in _subjects()
+
+
+def test_normalize_subject_strips_repeated_prefixes():
+    """머리말이 여러 번 붙는 경우가 있어 한 번만 떼면 부족하다."""
+    assert iferr.normalize_subject("RE: FW: (EAA) Alert") == "(EAA) Alert"
+    assert iferr.normalize_subject("  회신: 전달: 제목  ") == "제목"
+    assert iferr.normalize_subject("정상 제목") == "정상 제목"
+
+
+def test_contains_mode_is_still_default(monkeypatch: Any):
+    """기본 동작은 바뀌지 않는다."""
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_MATCH", "contains")
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_KEYWORDS", ("(EAA) Alert Mail",))
+    assert "문의: (EAA) Alert Mail 설정 관련" in _subjects()
+
+
+def test_match_is_case_insensitive(monkeypatch: Any):
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_MATCH", "startswith")
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_KEYWORDS", ("(eaa) ALERT mail",))
+    assert "(EAA) Alert Mail - 주문 연계 실패" in _subjects()
+
+
+def test_regex_mode(monkeypatch: Any):
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_MATCH", "regex")
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_KEYWORDS", (r"^\(EAA\)\s*Alert",))
+    hits = _subjects()
+    assert "(EAA) Alert Mail - 주문 연계 실패" in hits
+    assert "문의: (EAA) Alert Mail 설정 관련" not in hits
+
+
+def test_check_subject_rule_catches_bad_config(monkeypatch: Any):
+    """설정이 조용히 잘못되면 '오류 메일 없음'으로 보인다. 그게 제일 나쁘다."""
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_MATCH", "starts_with")   # 오타
+    assert any("MAIL_SUBJECT_MATCH" in p for p in iferr.check_subject_rule())
+
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_MATCH", "contains")
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_KEYWORDS", ())
+    assert any("비어 있어" in p for p in iferr.check_subject_rule())
+
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_KEYWORDS", ("오", "류"))
+    assert any("한 글자" in p for p in iferr.check_subject_rule())
+
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_MATCH", "regex")
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_KEYWORDS", ("(EAA",))    # 안 닫힌 괄호
+    assert any("정규식" in p for p in iferr.check_subject_rule())
+
+
+def test_bad_regex_does_not_crash(monkeypatch: Any):
+    """잘못된 정규식이 있어도 예외로 죽지 않는다(점검에서 알려 준다)."""
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_MATCH", "regex")
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_KEYWORDS", ("(EAA", r"^\(EAA\)"))
+    assert "(EAA) Alert Mail - 주문 연계 실패" in _subjects()

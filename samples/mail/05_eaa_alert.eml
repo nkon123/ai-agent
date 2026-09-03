@@ -1,0 +1,12 @@
+Subject: (EAA) Alert Mail - =?utf-8?b?7KO866y4IOyXsOqzhCDsi6TtjKg=?=
+From: eaa.noreply@partner.example
+To: erp.admin@corp.example
+Date: Thu, 03 Sep 2026 12:24:45 -0000
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+MIME-Version: 1.0
+
+EAA Alert
+
+IF_ID : IF_ORD_SEND
+오류: timeout

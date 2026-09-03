@@ -136,8 +136,24 @@ MAIL_LOOKBACK_HOURS: int = _env_int("MAIL_LOOKBACK_HOURS", 24)
 MAIL_MAX_COUNT: int = _env_int("MAIL_MAX_COUNT", 200)
 
 # 오류 메일을 고르는 제목 키워드. 하나라도 걸리면 대상으로 본다.
+# 항목이 하나여도 쉼표를 붙일 것 — ("오류") 는 튜플이 아니라 문자열이다.
 MAIL_SUBJECT_KEYWORDS: tuple[str, ...] = tuple(
     _env_str("MAIL_SUBJECT_KEYWORDS", "오류,에러,실패,ERROR,FAIL,FAILED,EXCEPTION").split(",")
+)
+
+# 제목을 어떻게 비교할 것인가. 대소문자는 어느 모드에서나 무시한다.
+#   contains   : 제목 어디에든 있으면 (기본)
+#   startswith : 제목이 그 문구로 시작할 때만.
+#                "(EAA) Alert Mail" 처럼 발신 시스템이 고정 머리말을 붙이는
+#                경우에 쓴다. 본문에 그 단어가 우연히 들어간 메일을 걸러낸다
+#   regex      : 정규식으로 비교
+MAIL_SUBJECT_MATCH: str = _env_str("MAIL_SUBJECT_MATCH", "contains")
+
+# 제목 앞에 붙는 회신·전달 머리말. 비교 전에 떼어낸다.
+# 떼지 않으면 "RE: (EAA) Alert Mail ..." 이 startswith 에서 빠진다.
+# 전달된 알림도 알림이다 — 누락은 오탐보다 나쁘다.
+MAIL_SUBJECT_STRIP_PREFIXES: tuple[str, ...] = tuple(
+    _env_str("MAIL_SUBJECT_STRIP_PREFIXES", "RE:,FW:,FWD:,답장:,회신:,전달:").split(",")
 )
 
 # --------------------------------------------------------------------------
@@ -301,6 +317,7 @@ _load_local()
 CONFIG_NORMALIZED: list[str] = []
 for _name in (
     "MAIL_SUBJECT_KEYWORDS",
+    "MAIL_SUBJECT_STRIP_PREFIXES",
     "IFERR_STATUS_COLUMNS",
     "CHAT_TOOL_TIERS",
     "SOURCE_ROOTS",
@@ -345,7 +362,8 @@ def describe() -> str:
         f"  ORACLE_USER  : {ORACLE_USER or '(미설정)'}",
         f"  ORACLE_PW    : {'설정됨' if ORACLE_PASSWORD else '(미설정)'}",
         f"  DB_TIMEOUT   : {DB_TIMEOUT_SEC}s",
-        f"  오류 키워드   : {', '.join(MAIL_SUBJECT_KEYWORDS) or '(없음 — 전부 대상 아님)'}",
+        f"  오류 키워드   : {', '.join(MAIL_SUBJECT_KEYWORDS) or '(없음 — 전부 대상 아님)'}"
+        + f"  [{MAIL_SUBJECT_MATCH}]",
         f"  MAIL         : {MAIL_BACKEND} / "
         + (MAIL_FOLDER or "(기본 받은 편지함)" if MAIL_BACKEND == "com" else MAIL_EML_DIR)
         + f" / 최근 {MAIL_LOOKBACK_HOURS}h",

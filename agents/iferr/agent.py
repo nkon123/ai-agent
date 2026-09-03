@@ -39,6 +39,8 @@ from config import (  # noqa: E402
     IFERR_SQL,
     IFERR_STATUS_COLUMNS,
     MAIL_SUBJECT_KEYWORDS,
+    MAIL_SUBJECT_MATCH,
+    MAIL_SUBJECT_STRIP_PREFIXES,
     USE_LLM,
 )
 from core import oracle  # noqa: E402
@@ -96,19 +98,87 @@ def extract_keys(text: str) -> list[dict[str, str]]:
     return found
 
 
+def normalize_subject(subject: str) -> str:
+    """비교용으로 제목을 다듬는다. 회신·전달 머리말을 반복 제거한다.
+
+    "RE: FW: (EAA) Alert Mail ..." 처럼 여러 번 붙는 경우가 있어
+    한 번만 떼면 부족하다. 떼지 않으면 startswith 모드에서 전달된 알림이
+    통째로 빠진다 — 누락은 오탐보다 나쁘다.
+    """
+    s = (subject or "").strip()
+    changed = True
+    while changed:
+        changed = False
+        for p in MAIL_SUBJECT_STRIP_PREFIXES:
+            p = p.strip()
+            if p and s.upper().startswith(p.upper()):
+                s = s[len(p) :].lstrip()
+                changed = True
+    return s
+
+
 def matched_keyword(mail: Mail) -> str:
     """제목에 걸린 키워드를 돌려준다. 안 걸리면 빈 문자열.
 
     걸린 키워드를 남기는 이유: '왜 이 메일이 오류로 잡혔지'를 결과만
     보고는 알 수 없다. 판정에는 반드시 근거가 따라와야 한다(규칙 4-6).
     설정을 잘못 써서 엉뚱한 메일이 걸리는 경우가 실제로 있었다.
+
+    비교 방식은 config.MAIL_SUBJECT_MATCH 로 정한다.
+    대소문자는 어느 모드에서나 무시한다.
     """
-    subject = (mail.subject or "").upper()
+    subject = normalize_subject(mail.subject)
+    upper = subject.upper()
+    mode = (MAIL_SUBJECT_MATCH or "contains").strip().lower()
+
     for k in MAIL_SUBJECT_KEYWORDS:
         k = k.strip()
-        if k and k.upper() in subject:
+        if not k:
+            continue
+        if mode == "startswith":
+            if upper.startswith(k.upper()):
+                return k
+        elif mode == "regex":
+            try:
+                if re.search(k, subject, re.IGNORECASE):
+                    return k
+            except re.error:
+                # 잘못된 정규식을 조용히 넘기면 '오류 메일 없음'으로 보인다.
+                # 여기서는 예외를 던지지 않고 건너뛰되, 설정 점검에서
+                # 걸리도록 check_subject_rule() 이 따로 알려 준다.
+                continue
+        elif upper.find(k.upper()) >= 0:
             return k
     return ""
+
+
+def check_subject_rule() -> list[str]:
+    """제목 판정 설정이 쓸 만한지 점검한다. 문제 목록을 돌려준다.
+
+    설정이 조용히 잘못되어 있으면 '오류 메일이 하나도 없다'로 보인다.
+    그건 장애를 놓치는 가장 흔한 경로다.
+    """
+    problems: list[str] = []
+    mode = (MAIL_SUBJECT_MATCH or "").strip().lower()
+    if mode not in ("contains", "startswith", "regex"):
+        problems.append(
+            f"MAIL_SUBJECT_MATCH 값이 이상하다: {MAIL_SUBJECT_MATCH!r} "
+            "(contains | startswith | regex)"
+        )
+    if not [k for k in MAIL_SUBJECT_KEYWORDS if k.strip()]:
+        problems.append("MAIL_SUBJECT_KEYWORDS 가 비어 있어 어떤 메일도 대상이 아니다")
+    for k in MAIL_SUBJECT_KEYWORDS:
+        if len(k.strip()) == 1:
+            problems.append(
+                f"키워드 '{k}' 가 한 글자다 — 쉼표를 빠뜨렸을 수 있다 "
+                '(("오류",) 처럼 쉼표를 붙일 것)'
+            )
+        if mode == "regex":
+            try:
+                re.compile(k)
+            except re.error as e:
+                problems.append(f"정규식이 잘못됐다: {k!r} — {e}")
+    return problems
 
 
 def is_error_mail(mail: Mail) -> bool:
@@ -544,16 +614,26 @@ if __name__ == "__main__":
             raise SystemExit(1)
 
         print(f"메일 {r['mail_count']}통 (오류로 분류 {r['error_count']}통)")
-        print(f"오류 판정 키워드: {', '.join(MAIL_SUBJECT_KEYWORDS) or '(없음)'}\n")
-        print(f"{'오류':<5}{'수신시각':<18}{'걸린키워드':<12}{'키':<22}제목")
+        print(
+            f"오류 판정: [{MAIL_SUBJECT_MATCH}] "
+            f"{', '.join(MAIL_SUBJECT_KEYWORDS) or '(없음)'}"
+        )
+        for problem in check_subject_rule():
+            print(f"  [설정 확인] {problem}")
+        print()
+        print(f"{'오류':<5}{'수신시각':<18}{'걸린키워드':<16}{'키':<22}제목")
         print("─" * 100)
         for m in r["mails"]:
             mark = "  O  " if m["is_error"] else "  .  "
             keys = ", ".join(m["keys"]) or ("-" if not m["is_error"] else "못찾음")
             # 걸린 키워드를 함께 보여 준다. 엉뚱한 메일이 O 로 찍히면
             # 여기를 보고 바로 원인을 안다(예: 한 글자짜리 '오').
+            # 컬럼 폭을 넘는 값은 잘라 정렬을 유지한다.
+            # "(EAA) Alert Mail" 처럼 긴 키워드에서 표가 밀린다.
+            hit = m["matched"] or "-"
+            hit = hit if len(hit) <= 14 else hit[:13] + "…"
             print(
-                f"{mark}{m['received'][:16]:<18}{(m['matched'] or '-'):<12}"
+                f"{mark}{m['received'][:16]:<18}{hit:<16}"
                 f"{keys:<22}{m['subject'][:40]}"
             )
         for w in r["warnings"]:

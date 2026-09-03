@@ -67,13 +67,40 @@ MAIL_BACKEND=eml python agents/iferr/agent.py --mails
 
 ## 설정할 것 세 가지
 
-### 1. 메일 (`config.py`)
+### 1. 메일 (`config_local.py`)
 
 ```python
 MAIL_BACKEND = "com"                      # 로컬 Outlook (Windows + pywin32)
 MAIL_FOLDER  = r"받은 편지함\인터페이스"    # Outlook 규칙으로 모아 둔 폴더
-MAIL_SUBJECT_KEYWORDS = ("오류","에러","실패","ERROR","FAIL",...)
+
+# 발신 시스템이 고정 머리말을 붙이는 경우
+MAIL_SUBJECT_MATCH = "startswith"
+MAIL_SUBJECT_KEYWORDS = ("(EAA) Alert Mail",)
 ```
+
+**비교 방식** (`MAIL_SUBJECT_MATCH`) — 대소문자는 어느 모드에서나 무시한다.
+
+| 모드 | 언제 |
+|---|---|
+| `contains` (기본) | 제목 어디에든 그 단어가 있으면 |
+| `startswith` | 제목이 그 문구로 **시작**할 때만 |
+| `regex` | 정규식 |
+
+`startswith` 를 쓰면 이렇게 갈린다.
+
+```
+O  (EAA) Alert Mail - 주문 연계 실패          ← 알림
+O  RE: FW: (EAA) Alert Mail - 재고 연계 실패   ← 전달된 알림도 잡는다
+.  문의: (EAA) Alert Mail 설정 관련            ← 알림이 아니다
+```
+
+`RE:` `FW:` 같은 머리말은 비교 전에 떼어낸다(`MAIL_SUBJECT_STRIP_PREFIXES`).
+여러 번 붙어 있어도 전부 뗀다 — 전달된 알림도 알림이고, **누락은 오탐보다
+나쁘다.**
+
+설정이 조용히 잘못되면 "오류 메일이 하나도 없다"로 보인다. `--mails` 는
+실행할 때마다 설정을 점검해 문제를 함께 출력한다(빈 키워드, 한 글자 키워드,
+잘못된 정규식, 오타 난 모드).
 
 `pip install pywin32` 가 필요하다. Outlook 규칙으로 오류 메일만 하위 폴더에
 모아 두면 스캔 범위가 줄어 훨씬 빠르다.

@@ -54,8 +54,20 @@ MAIL_LOOKBACK_HOURS = 24
 # 문자열이라 "오", "류" 한 글자씩 비교하게 되어 '오전', '오더' 같은
 # 제목이 전부 오류로 잡힌다. (config 가 자동 보정하고 경고도 하지만,
 # 애초에 쉼표를 붙이는 편이 낫다.)
-# MAIL_SUBJECT_KEYWORDS = ("오류",)
-# MAIL_SUBJECT_KEYWORDS = ("오류", "에러", "실패", "ERROR", "FAIL")
+#
+# 비교 방식 — 대소문자는 어느 모드에서나 무시한다.
+#   contains   : 제목 어디에든 있으면 (기본)
+#   startswith : 제목이 그 문구로 시작할 때만
+#   regex      : 정규식
+#
+# 발신 시스템이 고정 머리말을 붙이는 경우 startswith 가 안전하다.
+# "문의: (EAA) Alert Mail 설정 관련" 같은 메일이 걸리지 않는다.
+MAIL_SUBJECT_MATCH = "startswith"
+MAIL_SUBJECT_KEYWORDS = ("(EAA) Alert Mail",)
+
+# RE:/FW: 가 붙어 전달된 알림도 잡아야 하므로 비교 전에 머리말을 떼어낸다.
+# 사내에서 다른 머리말을 쓰면 여기에 추가한다.
+# MAIL_SUBJECT_STRIP_PREFIXES = ("RE:", "FW:", "FWD:", "답장:", "회신:", "전달:")
 
 # --------------------------------------------------------------------------
 # 인터페이스 키 추출 정규식 — (규칙이름, 정규식). 그룹 1이 키다.
