@@ -193,7 +193,40 @@ EAIIF0001234 를 이름에 'IF' 가 든 문자형 컬럼에서 찾는다...
 | `ORA-01017` | 계정·비밀번호 오류 |
 | `ORA-00942` | 테이블이 없거나 권한이 없다. `ORACLE_SCHEMA` 확인 |
 
-### 3. 조회 SQL (`config.IFERR_SQL`) — **아직 비어 있다**
+### 3. 조회 SQL (`config.IFERR_SQL`)
+
+기본값이 인터페이스 마스터(`IF_MST`) 조회로 들어가 있다.
+
+```sql
+SELECT IFID, SRCSYS, TARSYS, SRCTNAME, TARTNAME
+  FROM {schema}IF_MST
+ WHERE IFID = :if_key
+```
+
+메일에서 뽑은 `IFID` 로 이 행을 찾으면 **그 인터페이스가 무엇을 어디로
+나르는지**가 나온다. 실패했다는 것은 곧 타겟 테이블에 데이터가 들어가지
+않았다는 뜻이므로, 이 경로가 영향 범위다.
+
+```
+EAIIF0001234: found — SAP.ZORDER_OUT → ERP.IF_ORDER_TMP / header 1건
+```
+
+`{schema}` 는 `ORACLE_SCHEMA` 로 치환된다(미설정이면 빈 문자열).
+접속 계정과 테이블 소유자가 달라도 SQL 을 고칠 필요가 없다.
+
+컬럼 이름이 다르면 `IFERR_MASTER_FIELDS` 로 매핑한다.
+
+```python
+IFERR_MASTER_FIELDS = {
+    "id": "IFID", "src_sys": "SRCSYS", "tar_sys": "TARSYS",
+    "src_table": "SRCTNAME", "tar_table": "TARTNAME",
+}
+```
+
+`detail` / `impact` 는 아직 비어 있다 — 실제 전송 이력이나 실패 건수를
+담은 테이블이 있으면 채운다.
+
+#### 원래 이 절의 내용 (참고)
 
 ```python
 IFERR_SQL = {

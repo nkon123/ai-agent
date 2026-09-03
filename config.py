@@ -204,15 +204,34 @@ IFERR_KEY_PATTERNS: tuple[tuple[str, str], ...] = (
 )
 
 # 키로 조회할 SQL. 바인드 변수 이름은 :if_key 로 고정한다.
-# 스키마가 확정되면 여기만 채우면 된다 — 에이전트 코드는 손대지 않는다.
 # 문자열 결합 금지(주입 위험). 값은 반드시 바인드로 들어간다.
+#
+# {schema} 는 ORACLE_SCHEMA 로 치환된다(미설정이면 빈 문자열).
+# 접속 계정과 테이블 소유자가 다를 때 SQL 을 고치지 않아도 되게 하려는 것이다.
 IFERR_SQL: Dict[str, str] = {
-    # 인터페이스 1건의 헤더/상태
-    "header": _env_str("IFERR_SQL_HEADER", ""),
-    # 그 인터페이스가 실어 온 데이터 행
+    # 인터페이스 정의 마스터. 이 인터페이스가 무엇을 어디로 나르는지.
+    "header": _env_str(
+        "IFERR_SQL_HEADER",
+        """
+        SELECT IFID, SRCSYS, TARSYS, SRCTNAME, TARTNAME
+          FROM {schema}IF_MST
+         WHERE IFID = :if_key
+        """,
+    ),
+    # 그 인터페이스가 실어 온 데이터 행 (이력/로그 테이블이 있으면 여기에)
     "detail": _env_str("IFERR_SQL_DETAIL", ""),
     # 그 데이터가 영향을 주는 후속 대상
     "impact": _env_str("IFERR_SQL_IMPACT", ""),
+}
+
+# 마스터 조회 결과에서 의미 있는 컬럼 이름.
+# 사이트마다 이름이 다를 수 있어 매핑으로 둔다. 영향 문구를 만들 때 쓴다.
+IFERR_MASTER_FIELDS: Dict[str, str] = {
+    "id": _env_str("IFERR_FIELD_ID", "IFID"),
+    "src_sys": _env_str("IFERR_FIELD_SRC_SYS", "SRCSYS"),
+    "tar_sys": _env_str("IFERR_FIELD_TAR_SYS", "TARSYS"),
+    "src_table": _env_str("IFERR_FIELD_SRC_TABLE", "SRCTNAME"),
+    "tar_table": _env_str("IFERR_FIELD_TAR_TABLE", "TARTNAME"),
 }
 
 # 조회 결과에서 상태로 볼 컬럼 후보. 있으면 값별로 집계해 보여준다.

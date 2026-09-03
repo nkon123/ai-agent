@@ -119,13 +119,26 @@ def test_mail_unavailable_is_not_no_error(monkeypatch: Any):
 # --------------------------------------------------------------------------
 
 
-def test_unconfigured_sql_is_unknown_not_ok():
-    """SQL 미설정은 '영향 없음'이 아니라 '확인 불가'다."""
+def test_unconfigured_db_is_unknown_not_ok():
+    """DB 미설정은 '영향 없음'이 아니라 '확인 불가'다.
+
+    기본 SQL(IF_MST 조회)은 있으므로 여기서 걸리는 것은 접속 설정이다.
+    """
+    r = run_iferr(detail="full")
+    for c in r["cases"]:
+        assert c["db"]["status"] == "unknown"
+        assert c["rule"] == "db-not-configured"
+        assert c["impact"] == "확인 불가"
+    assert any("Oracle 설정이 비어 있다" in w for w in r["warnings"])
+
+
+def test_unconfigured_sql_is_unknown_not_ok(monkeypatch: Any):
+    """SQL 을 다 비워도 '확인 불가'다."""
+    monkeypatch.setattr(iferr, "IFERR_SQL", {"header": "", "detail": "", "impact": ""})
     r = run_iferr(detail="full")
     for c in r["cases"]:
         assert c["db"]["status"] == "unknown"
         assert c["rule"] == "sql-not-configured"
-        assert c["impact"] == "확인 불가"
     assert any("조회 SQL 이 설정되지 않았다" in w for w in r["warnings"])
 
 
@@ -734,3 +747,115 @@ def test_thick_mode_failure_explains_how_to_fix(monkeypatch: Any):
             pass
     msg = str(ei.value)
     assert "ORACLE_CLIENT_LIB_DIR" in msg and "32/64비트" in msg
+
+
+# --------------------------------------------------------------------------
+# IF_MST 기반 영향 판정
+# --------------------------------------------------------------------------
+
+
+def _fake_master(monkeypatch: Any, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """IF_MST 조회를 흉내 낸다."""
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(iferr.oracle, "is_configured", lambda: True)
+
+    def fake_query(sql: str, binds: Any = None, timeout: Any = None):
+        calls.append({"sql": sql, "binds": binds})
+        return rows
+
+    monkeypatch.setattr(iferr.oracle, "query", fake_query)
+    return calls
+
+
+def test_master_row_becomes_impact_text(monkeypatch: Any):
+    """IF_MST 한 행이 '무엇이 어디로 가는가'로 요약되어야 한다.
+
+    인터페이스가 실패했다는 것은 타겟 테이블에 데이터가 들어가지 않았다는
+    뜻이다. 그 경로가 곧 영향 범위다.
+    """
+    _fake_master(
+        monkeypatch,
+        [
+            {
+                "IFID": "ABCIF0001234",
+                "SRCSYS": "SAP",
+                "TARSYS": "ERP",
+                "SRCTNAME": "ZORDER",
+                "TARTNAME": "IF_ORDER_TMP",
+            }
+        ],
+    )
+    c = run_iferr(key="ABCIF0001234", detail="full")["cases"][0]
+
+    assert c["db"]["status"] == "found" and c["rule"] == "rows-found"
+    assert "SAP.ZORDER → ERP.IF_ORDER_TMP" in c["impact"]
+    assert c["flows"][0]["tar_table"] == "IF_ORDER_TMP"
+
+
+def test_master_lookup_uses_bind(monkeypatch: Any):
+    """IFID 는 반드시 바인드로 들어간다."""
+    calls = _fake_master(monkeypatch, [{"IFID": "ABCIF0001234"}])
+    run_iferr(key="ABCIF0001234", detail="full")
+    assert calls[0]["binds"] == {"if_key": "ABCIF0001234"}
+    assert "ABCIF0001234" not in calls[0]["sql"]
+    assert "IF_MST" in calls[0]["sql"] and "IFID = :if_key" in calls[0]["sql"]
+
+
+def test_master_field_names_are_configurable(monkeypatch: Any):
+    """사이트마다 컬럼 이름이 다를 수 있다."""
+    monkeypatch.setattr(
+        iferr,
+        "IFERR_MASTER_FIELDS",
+        {
+            "id": "INTERFACE_ID",
+            "src_sys": "FROM_SYS",
+            "tar_sys": "TO_SYS",
+            "src_table": "FROM_TAB",
+            "tar_table": "TO_TAB",
+        },
+    )
+    _fake_master(
+        monkeypatch,
+        [
+            {
+                "INTERFACE_ID": "X1",
+                "FROM_SYS": "MES",
+                "TO_SYS": "ERP",
+                "FROM_TAB": "T1",
+                "TO_TAB": "T2",
+            }
+        ],
+    )
+    c = run_iferr(key="X1", detail="full")["cases"][0]
+    assert "MES.T1 → ERP.T2" in c["impact"]
+
+
+def test_summary_carries_flows(monkeypatch: Any):
+    """경로는 LLM 컨텍스트에 들어가야 할 핵심 정보다."""
+    _fake_master(
+        monkeypatch,
+        [{"IFID": "X1", "SRCSYS": "SAP", "TARSYS": "ERP",
+          "SRCTNAME": "A", "TARTNAME": "B"}],
+    )
+    s = run_iferr(key="X1", detail="summary")["cases"][0]
+    assert s["flows"][0]["src_sys"] == "SAP"
+    assert "SAP.A → ERP.B" in s["impact"]
+
+
+def test_schema_prefix_is_validated(monkeypatch: Any):
+    """{schema} 치환에도 식별자 검증이 걸려야 한다."""
+    from core import oracle
+
+    monkeypatch.setattr(oracle, "ORACLE_SCHEMA", "ERP")
+    assert oracle.render_sql("SELECT * FROM {schema}IF_MST") == (
+        'SELECT * FROM "ERP".IF_MST'
+    )
+
+    monkeypatch.setattr(oracle, "ORACLE_SCHEMA", "ERP; DROP TABLE X")
+    with pytest.raises(ValueError):
+        oracle.render_sql("SELECT * FROM {schema}IF_MST")
+
+    monkeypatch.setattr(oracle, "ORACLE_SCHEMA", None)
+    assert oracle.render_sql("SELECT * FROM {schema}IF_MST") == (
+        "SELECT * FROM IF_MST"
+    )

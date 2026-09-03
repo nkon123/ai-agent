@@ -100,18 +100,26 @@ IFERR_KEY_PREFIXES = ("EAIIF",)
 # 조회 SQL — 바인드 변수 이름은 :if_key 로 고정이다.
 # SELECT 만 넣을 것. 문자열 결합 금지(주입 위험).
 # --------------------------------------------------------------------------
-IFERR_SQL = {
-    "header": """
-        SELECT if_key, status, err_msg, reg_dt
-          FROM if_hdr
-         WHERE if_key = :if_key
-         ORDER BY reg_dt DESC
-    """,
-    "detail": """
-        SELECT seq, ord_no, item_cd, qty, status
-          FROM if_dtl
-         WHERE if_key = :if_key
-    """,
-    # 그 데이터가 영향을 주는 후속 대상
-    "impact": "",
-}
+# header 는 config.py 에 기본값(IF_MST 조회)이 들어 있다. 그대로 쓰면 되고,
+# 이력·실패 건수 테이블이 있으면 detail 을 채운다.
+# {schema} 는 ORACLE_SCHEMA 로 치환된다.
+# IFERR_SQL = {
+#     "header": """
+#         SELECT IFID, SRCSYS, TARSYS, SRCTNAME, TARTNAME
+#           FROM {schema}IF_MST
+#          WHERE IFID = :if_key
+#     """,
+#     "detail": """
+#         SELECT ...
+#           FROM {schema}IF_LOG
+#          WHERE IFID = :if_key
+#          ORDER BY ... DESC
+#     """,
+#     "impact": "",
+# }
+
+# 마스터 컬럼 이름이 다르면 매핑한다.
+# IFERR_MASTER_FIELDS = {
+#     "id": "IFID", "src_sys": "SRCSYS", "tar_sys": "TARSYS",
+#     "src_table": "SRCTNAME", "tar_table": "TARTNAME",
+# }

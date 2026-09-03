@@ -274,6 +274,21 @@ def find_value(
     return hits
 
 
+def schema_prefix() -> str:
+    """SQL 의 {schema} 자리에 넣을 접두어. 미설정이면 빈 문자열.
+
+    식별자는 바인드로 넘길 수 없어 문자열에 들어가므로 반드시 검증한다.
+    """
+    if not ORACLE_SCHEMA:
+        return ""
+    return _quote_ident(ORACLE_SCHEMA) + "."
+
+
+def render_sql(sql: str) -> str:
+    """SQL 템플릿의 {schema} 를 치환한다. 값은 절대 치환하지 않는다."""
+    return sql.replace("{schema}", schema_prefix())
+
+
 def query(
     sql: str,
     binds: Mapping[str, Any] | Sequence[Any] | None = None,
@@ -290,6 +305,8 @@ def query(
     if "%s" in sql or "'{" in sql:
         # 흔한 문자열 결합 실수를 이른 단계에서 잡는다.
         raise ValueError("SQL 에 문자열 포맷 흔적이 있다. 바인드 변수를 사용할 것.")
+
+    sql = render_sql(sql)
 
     with get_conn() as conn:
         # call_timeout 은 밀리초 단위다.

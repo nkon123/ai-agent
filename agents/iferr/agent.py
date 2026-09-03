@@ -36,6 +36,7 @@ from langgraph.graph import END, START, StateGraph  # noqa: E402
 from config import (  # noqa: E402
     IFERR_KEY_PATTERNS,
     IFERR_KEY_PREFIXES,
+    IFERR_MASTER_FIELDS,
     IFERR_MAX_ROWS,
     IFERR_SQL,
     IFERR_STATUS_COLUMNS,
@@ -399,15 +400,53 @@ def assess(state: IfErrState) -> IfErrState:
 
         counts = {name: len(r) for name, r in rows.items() if r}
         status_summary = _summarize_status(rows)
-        parts = [f"{name} {n}건" for name, n in counts.items()]
+
+        # 마스터에서 '무엇이 어디로 가는 인터페이스인가'를 먼저 뽑는다.
+        # 이게 곧 영향 범위다 — 실패하면 타겟 테이블에 데이터가 안 들어간다.
+        flows = _master_summary(rows.get("header") or [])
+        parts: list[str] = []
+        if flows:
+            parts.append(" / ".join(_flow_text(f) for f in flows[:3]))
+            if len(flows) > 3:
+                parts.append(f"외 {len(flows) - 3}건")
+        parts += [f"{name} {n}건" for name, n in counts.items()]
         if status_summary:
             parts.append("상태 " + ", ".join(f"{k}={v}" for k, v in status_summary.items()))
+
         c["impact"] = " / ".join(parts)
         c["decided_by"] = "rule"
         c["rule"] = "rows-found"
         c["counts"] = counts
         c["status_summary"] = status_summary
+        c["flows"] = flows
     return {"cases": state.get("cases") or []}
+
+
+def _master_summary(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """마스터(IF_MST) 행에서 '무엇이 어디로 가는가'를 뽑는다.
+
+    컬럼 이름은 사이트마다 다를 수 있어 config.IFERR_MASTER_FIELDS 로 매핑한다.
+    조회 결과의 키는 대문자로 오므로 대소문자를 맞춰 찾는다.
+    """
+    out: list[dict[str, str]] = []
+    for row in rows:
+        upper = {str(k).upper(): v for k, v in row.items()}
+        item = {
+            name: str(upper.get(str(col).upper(), "") or "")
+            for name, col in IFERR_MASTER_FIELDS.items()
+        }
+        if any(item.values()):
+            out.append(item)
+    return out
+
+
+def _flow_text(m: dict[str, str]) -> str:
+    """'출발 → 도착'을 한 줄로. 영향 범위를 사람이 바로 읽을 수 있게."""
+    src = ".".join(x for x in (m.get("src_sys"), m.get("src_table")) if x)
+    tar = ".".join(x for x in (m.get("tar_sys"), m.get("tar_table")) if x)
+    if src and tar:
+        return f"{src} → {tar}"
+    return src or tar or "경로 정보 없음"
 
 
 def _summarize_status(rows: dict[str, list[dict[str, Any]]]) -> dict[str, int]:
@@ -511,6 +550,7 @@ def run_iferr(
                     "status": (c.get("db") or {}).get("status", "unknown"),
                     "impact": c.get("impact", ""),
                     "rule": c.get("rule", ""),
+                    "flows": c.get("flows") or [],
                     "mail_count": len(c.get("mails") or []),
                 }
                 for c in cases[:10]
