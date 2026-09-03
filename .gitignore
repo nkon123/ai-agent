@@ -10,6 +10,9 @@ venv/
 env/
 
 # 설정·비밀
+# config_local.py 는 사내 PC 의 실제 설정(경로·계정·SQL)이다.
+# 추적하지 않아야 사내에서 pull 할 때 충돌이 나지 않는다.
+config_local.py
 .env
 .env.*
 !.env.example

@@ -24,6 +24,56 @@ Ollama 와 모델 준비:
 ollama pull gemma4:e2b
 ```
 
+## 사내 PC 운영 — 설정은 `config_local.py` 에
+
+사내 PC 는 **pull 만** 한다. `config.py` 는 git 이 추적하므로 거기서 값을
+고치면 `git pull` 때마다 충돌이 난다. 사내 값은 추적하지 않는
+`config_local.py` 에 쓴다.
+
+```bash
+copy config_local.example.py config_local.py    # 최초 1회 (Windows)
+# config_local.py 를 열어 사내 값만 적는다. 이후 pull 은 항상 깨끗하다.
+```
+
+```python
+# config_local.py — git 이 추적하지 않는다
+SOURCE_ROOTS = {"ERP": r"D:\src\erp"}
+ORACLE_DSN = "dbhost:1521/ORCL"
+ORACLE_USER = "erp_read"
+ORACLE_PASSWORD = "..."
+MAIL_FOLDER = r"받은 편지함\인터페이스"
+IFERR_SQL = {"header": "SELECT ... WHERE if_key = :if_key", ...}
+```
+
+**우선순위: 환경변수 > `config_local.py` > `config.py` 기본값**
+
+환경변수를 위에 둔 이유는 `USE_LLM=false python app/app.py` 처럼 한 번만
+다르게 실행하는 경우를 막지 않기 위해서다. 항구적인 값은 `config_local.py` 에 쓴다.
+
+이름은 `config.py` 에 있는 것과 정확히 같아야 한다. `ORACLE_DNS` 처럼 오타를
+내면 **기동 시 stderr 로 경고**가 뜨고 `describe_settings` 툴에도 나온다.
+조용히 무시되면 "설정했는데 왜 안 되지"로 한참 헤매게 된다.
+
+기동 로그 마지막 줄에서 무엇이 적용됐는지 확인할 수 있다.
+
+```
+config_local : D:\ai-agent\config_local.py → IFERR_SQL, ORACLE_DSN, SOURCE_ROOTS
+```
+
+### 이미 `config.py` 를 고쳐 둔 사내 PC 라면 (1회)
+
+```bash
+git stash                                    # 고친 내용을 잠시 치워 둔다
+git pull
+copy config_local.example.py config_local.py
+git stash show -p                            # 치워 둔 내 수정 내용을 보고
+                                             # 값들을 config_local.py 로 옮긴다
+git stash drop                               # 다 옮겼으면 버린다
+```
+
+`git checkout -- config.py` 로 바로 되돌려도 되지만, 그러면 고친 값이 사라진다.
+`git stash` 로 내용을 보면서 옮기는 편이 안전하다.
+
 ## 실행
 
 ```bash
@@ -214,7 +264,8 @@ GET /api/resource?template=myagent://detail/{arg}&arg=값
 ### 설정은 `config.py` 한 곳에만
 
 `core/` 나 `agents/` 안에서 `os.getenv` 를 다시 부르지 말 것. 전부
-`from config import ...` 로 가져온다.
+`from config import ...` 로 가져온다. 사내 값은 `config_local.py` 에 두고
+`config.py` 자체는 고치지 않는다 (pull 충돌 방지).
 
 > 설정이 이원화되면 한쪽만 고쳤을 때 서로 다른 값을 보게 된다. 실제로
 > 앱은 새 경로를, 툴은 기본 경로를 보고 있어 같은 질문에 다른 답이 나왔다.

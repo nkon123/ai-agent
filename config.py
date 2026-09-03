@@ -9,15 +9,28 @@
       (실제로 앱은 새 경로를, 툴은 기본 경로를 보고 있어 같은 질문에
        다른 답이 나온 적이 있다.)
     - 기본값은 코드에 두어 환경변수 없이도 바로 실행 가능해야 한다.
-      환경변수는 "덮어쓰기" 용도일 뿐이다.
     - Windows 경로 기본값은 반드시 raw 문자열 r"..." 로 쓸 것.
       "C:\temp\new" 처럼 쓰면 \t, \n 이 해석되어 조용히 깨진다.
+
+이 파일을 직접 고치지 말 것 (중요):
+    이 파일은 git 이 추적한다. 사내 PC 에서 값을 고치면 git pull 때마다
+    충돌이 난다. 사내 값은 config_local.py 에 쓴다. 그 파일은 .gitignore
+    에 있어 추적되지 않으므로 pull 이 깨끗하게 된다.
+
+        copy config_local.example.py config_local.py    # 최초 1회
+        # config_local.py 를 열어 사내 값만 적는다
+
+    우선순위: 환경변수 > config_local.py > 이 파일의 기본값
+    (환경변수를 위에 둔 이유: USE_LLM=false 처럼 한 번만 다르게 실행하는
+     경우가 있어야 하기 때문이다. 항구적인 값은 config_local.py 에 쓴다.)
 """
 
 from __future__ import annotations
 
 import os
-from typing import Dict
+import sys
+from types import ModuleType
+from typing import Any, Dict, Mapping
 
 
 def _env_str(key: str, default: str) -> str:
@@ -173,9 +186,9 @@ MCP_HTTP_HOST: str = _env_str("MCP_HTTP_HOST", "127.0.0.1")
 MCP_HTTP_PORT: int = _env_int("MCP_HTTP_PORT", 8765)
 
 # 클라이언트(챗봇)가 붙을 주소. streamable-http 일 때만 쓴다.
-MCP_SERVER_URL: str = _env_str(
-    "MCP_SERVER_URL", f"http://{MCP_HTTP_HOST}:{MCP_HTTP_PORT}/mcp"
-)
+# 비워 두면 아래(_finalize)에서 HOST/PORT 로 조립한다. config_local.py 가
+# 포트만 바꾼 경우에도 URL 이 따라가야 하므로 여기서 완성하지 않는다.
+MCP_SERVER_URL: str = _env_str("MCP_SERVER_URL", "")
 
 # 챗봇(로컬 LLM)에 노출할 툴 등급.
 # 소형 모델은 툴을 순서대로 여러 개 부르지 못하므로 기본은 통합 툴만 준다.
@@ -200,6 +213,78 @@ MCP_INPUT_REQUIRED_MAX_ROUNDS: int = _env_int("MCP_INPUT_REQUIRED_MAX_ROUNDS", 5
 HOST: str = _env_str("HOST", "127.0.0.1")
 PORT: int = _env_int("PORT", 5000)
 DEBUG: bool = _env_bool("DEBUG", False)
+
+
+# --------------------------------------------------------------------------
+# config_local.py 덮어쓰기
+#
+# 사내 PC 는 pull 만 한다. 추적되는 파일을 고치면 충돌이 나므로,
+# 사내 값은 추적하지 않는 config_local.py 에 두고 여기서 덮어쓴다.
+# --------------------------------------------------------------------------
+
+# 어떤 값이 어디서 왔는지 남긴다. 설정 이원화 사고를 진단할 때 이게 없으면
+# "왜 이 값이지"를 추적할 수 없다.
+CONFIG_LOCAL_APPLIED: list[str] = []
+CONFIG_LOCAL_UNKNOWN: list[str] = []
+CONFIG_LOCAL_FILE: str = ""
+
+
+def _merge_overrides(
+    target: Dict[str, Any],
+    overrides: Dict[str, Any],
+    env: Mapping[str, str],
+) -> tuple[list[str], list[str]]:
+    """overrides 를 target 에 반영한다. (적용된 이름, 모르는 이름)
+
+    - 같은 이름의 환경변수가 있으면 환경변수가 이긴다.
+      한 번만 다르게 실행하는 경우(USE_LLM=false)를 막지 않기 위해서다.
+    - target 에 없는 이름은 반영하지 않고 따로 돌려준다.
+      ORACLE_DNS 처럼 오타를 내면 조용히 무시되어 "설정했는데 왜 안 되지"로
+      한참 헤매게 된다. 이름이 틀렸다는 사실이 드러나야 한다.
+    """
+    applied: list[str] = []
+    unknown: list[str] = []
+    for name, value in overrides.items():
+        if name.startswith("_") or isinstance(value, ModuleType) or callable(value):
+            continue
+        if name not in target:
+            unknown.append(name)
+            continue
+        if env.get(name):        # 환경변수가 우선
+            continue
+        target[name] = value
+        applied.append(name)
+    return applied, unknown
+
+
+def _load_local() -> None:
+    """config_local.py 가 있으면 읽어 덮어쓴다. 없어도 정상 동작한다."""
+    global CONFIG_LOCAL_FILE
+    try:
+        import config_local  # type: ignore
+    except ImportError:
+        return
+
+    CONFIG_LOCAL_FILE = getattr(config_local, "__file__", "config_local.py") or ""
+    applied, unknown = _merge_overrides(globals(), vars(config_local), os.environ)
+    CONFIG_LOCAL_APPLIED[:] = sorted(applied)
+    CONFIG_LOCAL_UNKNOWN[:] = sorted(unknown)
+
+    if unknown:
+        # stdout 에 쓰면 안 된다. stdio MCP 모드에서 stdout 은 프로토콜
+        # 전용 채널이라 한 줄만 섞여도 클라이언트가 핸드셰이크에서 죽는다.
+        print(
+            f"[config] config_local.py 에 모르는 이름이 있다(오타 확인): "
+            f"{', '.join(CONFIG_LOCAL_UNKNOWN)}",
+            file=sys.stderr,
+        )
+
+
+_load_local()
+
+# 파생값은 덮어쓰기가 끝난 뒤에 조립한다.
+if not MCP_SERVER_URL:
+    MCP_SERVER_URL = f"http://{MCP_HTTP_HOST}:{MCP_HTTP_PORT}/mcp"
 
 
 def describe() -> str:
@@ -231,6 +316,12 @@ def describe() -> str:
         f"  MCP          : {MCP_PROTOCOL_VERSION} / {MCP_TRANSPORT}"
         + (f" → {MCP_SERVER_URL}" if MCP_TRANSPORT != "stdio" else " (python -m mcp_server)"),
         f"  SERVER       : http://{HOST}:{PORT} (debug={DEBUG})",
+        f"  config_local : "
+        + (
+            f"{CONFIG_LOCAL_FILE} → {', '.join(CONFIG_LOCAL_APPLIED) or '(적용된 값 없음)'}"
+            if CONFIG_LOCAL_FILE
+            else "(없음 — 기본값 사용)"
+        ),
         "─" * 60,
     ]
     return "\n".join(lines)
