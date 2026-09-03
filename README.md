@@ -232,6 +232,7 @@ from . import mcp, register
 @register(label="내 에이전트", view="text",
           detail_uri="myagent://detail/{arg}",
           hint="myagent_run 은 ... 할 때만 쓴다.",
+          examples=("이렇게 물어보세요", "예시 질문 두어 개"),  # 화면 사이드바
           read_only=True,          # 파괴적이면 destructive=True
           tier="combo")            # 단계별 툴이면 tier="step"
 def myagent_run(arg: str) -> str:

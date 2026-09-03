@@ -22,9 +22,22 @@ from __future__ import annotations
 
 import json
 
+from config import IFERR_KEY_PREFIXES
+
 from agents.iferr import extract_keys, list_mails, lookup_key, run_iferr
 
 from . import mcp, register
+
+def sample_key(prefixes: tuple[str, ...]) -> str:
+    """예시 질문에 쓸 키를 만든다.
+
+    사내 고유 접두어를 추적되는 파일에 박지 않으면서도, 화면에는 실제
+    형태와 같은 예시가 뜨게 하려는 것이다. 접두어가 없으면 일반 문구.
+    """
+    return f"{prefixes[0]}0001234" if prefixes else "인터페이스ID"
+
+
+_SAMPLE_KEY = sample_key(IFERR_KEY_PREFIXES)
 
 
 @register(
@@ -37,6 +50,12 @@ from . import mcp, register
         "hours 만 넣어라. status 가 unknown 이면 '문제 없음'이 아니라 "
         "'확인하지 못했다'는 뜻이니 그 사실을 반드시 사용자에게 전달하라. "
         "재처리나 데이터 수정은 이 툴로 할 수 없다."
+    ),
+    examples=(
+        "오늘 인터페이스 오류 있어?",
+        "최근 3일 연계 실패 확인해줘",
+        f"{_SAMPLE_KEY} 이 인터페이스 뭐가 문제야?",
+        "어제 실패한 인터페이스는 어디로 가는 거였어?",
     ),
     read_only=True,
     tier="combo",

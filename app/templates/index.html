@@ -12,14 +12,13 @@
   aside { width:260px; border-right:1px solid var(--bd); padding:16px;
           overflow-y:auto; background:#fff; }
   aside h2 { font-size:13px; margin:0 0 12px; color:#666; }
-  .tool { border:1px solid var(--bd); border-radius:6px; padding:8px 10px;
-          margin-bottom:8px; }
-  .tool b { display:block; font-size:13px; }
-  .tool span { color:#777; font-size:12px; }
-  .tool em { font-style:normal; font-size:11px; color:#b45309; }
-  .tool.step { opacity:.65; }
-  .tool i { font-style:normal; font-size:11px; color:#666; }
-  aside h3 { font-size:12px; color:#888; margin:18px 0 8px; font-weight:600; }
+  /* 예시 질문은 버튼이다. 클릭하면 입력창에 들어간다. */
+  .ex { display:block; width:100%; text-align:left; border:1px solid var(--bd);
+        border-radius:6px; padding:9px 11px; margin-bottom:7px; background:#fff;
+        font:inherit; font-size:13px; color:#222; cursor:pointer; line-height:1.4; }
+  .ex:hover { background:#f0f5ff; border-color:#9db8e0; }
+  aside h3 { font-size:11px; color:#999; margin:16px 0 7px; font-weight:600;
+             letter-spacing:.02em; }
   #mcp { font-size:11px; color:#999; margin-top:16px; }
   .warn { background:#fff7e6; border:1px solid #f0d9a8; }
   main { flex:1; display:flex; flex-direction:column; }
@@ -41,8 +40,8 @@
 </head>
 <body>
 <aside>
-  <h2>등록된 툴</h2>
-  <div id="tools">불러오는 중…</div>
+  <h2>이렇게 물어보세요</h2>
+  <div id="examples">불러오는 중…</div>
   <p id="mcp"></p>
 </aside>
 <main>
@@ -67,34 +66,40 @@ function add(text, cls) {
 }
 
 fetch("/api/tools").then(r => r.json()).then(d => {
-  const box = document.getElementById("tools");
+  const box = document.getElementById("examples");
   box.innerHTML = "";
-  // MCP 로 어느 리비전에 붙었는지 화면에 남긴다. 버전이 어긋나면
-  // 툴이 안 보이는 것부터가 아니라 여기서 먼저 눈에 띈다.
+  // MCP 로 어느 리비전에 붙었는지 화면 아래에 남긴다. 버전이 어긋나면
+  // 답이 이상한 것부터가 아니라 여기서 먼저 눈에 띈다.
   if (d.mcp && d.mcp.connected) {
     document.getElementById("mcp").textContent =
-      "MCP " + d.mcp.protocol + " · " + d.mcp.transport + " · " + d.mcp.server;
+      "MCP " + d.mcp.protocol + " · " + d.mcp.transport + " · 툴 " +
+      d.tools.filter(t => t.in_chat).length + "개";
   }
-  if (!d.tools.length) { box.textContent = "(없음)"; return; }
-  // 챗봇에 노출된 툴과 그렇지 않은 툴을 나눠 보여 준다. 목록에 있는데
-  // 모델이 안 부르는 이유를 화면에서 바로 알 수 있어야 한다.
-  const render = (t) => {
-    const el = document.createElement("div");
-    el.className = "tool" + (t.in_chat ? "" : " step");
-    el.innerHTML = "<b></b><span></span><em></em><i></i>";
-    el.querySelector("b").textContent = t.label;
-    el.querySelector("span").textContent = t.description || t.name;
-    if (t.destructive) el.querySelector("em").textContent = "⚠ 확인 필요 동작";
-    if (!t.in_chat) el.querySelector("i").textContent = "단계별 — 대화에는 미노출";
-    box.appendChild(el);
-  };
-  d.tools.filter(t => t.in_chat).forEach(render);
-  const steps = d.tools.filter(t => !t.in_chat);
-  if (steps.length) {
+
+  // 예시는 각 툴이 들고 온다(_meta.examples). 챗봇에 노출된 툴의 예시만
+  // 띄운다 — 대화에 없는 툴의 예시를 클릭하면 모델이 답할 수 없다.
+  const shown = d.tools.filter(t => t.in_chat && t.examples && t.examples.length);
+  if (!shown.length) { box.textContent = "(예시 없음)"; return; }
+
+  for (const t of shown) {
     const h = document.createElement("h3");
-    h.textContent = "단계별 툴 (MCP 호스트용)";
+    h.textContent = t.label;
     box.appendChild(h);
-    steps.forEach(render);
+    for (const text of t.examples) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "ex";
+      b.textContent = text;
+      // 바로 보내지 않고 입력창에 넣는다. 날짜나 ID 를 고쳐서 보내는
+      // 경우가 대부분이라 그 편이 쓸모 있다.
+      b.addEventListener("click", () => {
+        const q = document.getElementById("q");
+        q.value = text;
+        q.focus();
+        q.setSelectionRange(text.length, text.length);
+      });
+      box.appendChild(b);
+    }
   }
 });
 

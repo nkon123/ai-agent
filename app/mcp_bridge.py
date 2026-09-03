@@ -252,6 +252,7 @@ def _spec_of(mcp_tool: Any) -> dict[str, Any]:
         "view": meta.get("view", "text"),
         "detail_uri": meta.get("detail_uri", ""),
         "hint": meta.get("hint", ""),
+        "examples": list(meta.get("examples") or []),
         "tier": meta.get("tier", "combo"),
         "in_chat": meta.get("tier", "combo") in set(config.CHAT_TOOL_TIERS),
         "read_only": bool(getattr(ann, "read_only_hint", False)) if ann else False,

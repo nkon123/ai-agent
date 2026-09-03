@@ -80,6 +80,7 @@ def register(
     view: str = "text",
     detail_uri: str = "",
     hint: str = "",
+    examples: tuple[str, ...] = (),
     read_only: bool = True,
     destructive: bool = False,
     idempotent: bool = True,
@@ -94,6 +95,9 @@ def register(
                   툴은 컨텍스트를 아끼려고 요약만 돌려주므로, 화면용
                   전체 데이터는 리소스로 따로 읽는다(LLM 컨텍스트 밖).
     hint        : 시스템 프롬프트에 자동으로 합쳐지는 툴별 지침
+    examples    : 화면에 띄울 예시 질문. 사용자가 클릭하면 입력창에 들어간다.
+                  hint 와 같은 이유로 툴 옆에 둔다 — 툴을 지우면 예시도 같이
+                  사라져야 한다. 한곳에 모아 두면 없는 툴의 예시가 남는다.
     read_only   : 외부 상태를 바꾸지 않는가
     destructive : 파일 삭제·메일 발송·DML 처럼 되돌리기 어려운가.
                   True 면 클라이언트가 자동 실행을 막고 사람 확인을 받는다.
@@ -118,6 +122,7 @@ def register(
                 "view": view,
                 "detail_uri": detail_uri,
                 "hint": hint.strip(),
+                "examples": tuple(examples),
                 "destructive": destructive,
                 "tier": tier,
             }
@@ -139,6 +144,7 @@ def register(
                 "view": view,
                 "detail_uri": detail_uri,
                 "hint": hint.strip(),
+                "examples": list(examples),
                 "tier": tier,
             },
         )(fn)

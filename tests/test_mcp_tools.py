@@ -252,3 +252,32 @@ def test_bridge_can_open_all_tiers(monkeypatch: Any) -> None:
         {"name": "step_tool", "tier": "step", "hint": "단계 지침", "destructive": False},
     ]
     assert "단계 지침" in bridge.hints()
+
+
+def test_chat_tools_carry_example_questions() -> None:
+    """화면에 띄울 예시 질문은 툴이 들고 온다.
+
+    한곳에 모아 두면 툴을 지웠을 때 없는 툴의 예시가 남는다.
+    """
+
+    async def check(c: Client) -> Any:
+        return (await c.list_tools()).tools
+
+    tools = {t.name: t for t in _run(_with_client(check))}
+    ex = tools["check_interface_errors"].meta.get("examples") or []
+    assert ex and all(isinstance(x, str) and x.strip() for x in ex)
+    # 단계별 툴은 대화에 없으므로 예시를 띄우지 않는다.
+    assert not (tools["lookup_interface"].meta.get("examples") or [])
+
+
+def test_example_key_follows_configured_prefix() -> None:
+    """예시에 쓰는 키는 설정된 접두어에서 만든다.
+
+    사내 고유 접두어를 추적되는 파일에 박지 않으면서도 실제 형태와 같은
+    예시가 뜨게 하려는 것이다.
+    (툴 모듈을 reload 하면 레지스트리에 중복 등록되므로 함수만 검증한다.)
+    """
+    from mcp_server.tools.iferr import sample_key
+
+    assert sample_key(("ZZZIF",)) == "ZZZIF0001234"
+    assert sample_key(()) == "인터페이스ID"

@@ -27,6 +27,10 @@ from . import mcp, register
         "결과의 used 가 unknown 이면 '없다'가 아니라 '확인하지 못했다'는 뜻이니 "
         "그대로 사용자에게 전달하라."
     ),
+    examples=(
+        "TOTAL_AMT 어디서 쓰여?",
+        "이 테이블 쓰는 소스 찾아줘",
+    ),
     read_only=True,
     tier="combo",
 )
