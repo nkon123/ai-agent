@@ -96,10 +96,24 @@ def extract_keys(text: str) -> list[dict[str, str]]:
     return found
 
 
+def matched_keyword(mail: Mail) -> str:
+    """제목에 걸린 키워드를 돌려준다. 안 걸리면 빈 문자열.
+
+    걸린 키워드를 남기는 이유: '왜 이 메일이 오류로 잡혔지'를 결과만
+    보고는 알 수 없다. 판정에는 반드시 근거가 따라와야 한다(규칙 4-6).
+    설정을 잘못 써서 엉뚱한 메일이 걸리는 경우가 실제로 있었다.
+    """
+    subject = (mail.subject or "").upper()
+    for k in MAIL_SUBJECT_KEYWORDS:
+        k = k.strip()
+        if k and k.upper() in subject:
+            return k
+    return ""
+
+
 def is_error_mail(mail: Mail) -> bool:
     """제목 키워드로 오류 메일을 고른다. 판정 기준을 한곳에 둔다."""
-    subject = (mail.subject or "").upper()
-    return any(k.strip().upper() in subject for k in MAIL_SUBJECT_KEYWORDS if k.strip())
+    return bool(matched_keyword(mail))
 
 
 # --------------------------------------------------------------------------
@@ -448,13 +462,16 @@ def list_mails(hours: int | None = None, detail: Detail = "full") -> dict[str, A
 
     rows: list[dict[str, Any]] = []
     for m in state.get("mails") or []:
-        keys = extract_keys(f"{m.subject}\n{m.body}") if is_error_mail(m) else []
+        hit = matched_keyword(m)
+        keys = extract_keys(f"{m.subject}\n{m.body}") if hit else []
         rows.append(
             {
                 "subject": m.subject,
                 "received": m.received.isoformat() if m.received else "",
                 "sender": m.sender_masked,
-                "is_error": is_error_mail(m),
+                "is_error": bool(hit),
+                # 어떤 키워드에 걸렸는지 남긴다. 오탐 원인을 여기서 찾는다.
+                "matched": hit,
                 "keys": [k["key"] for k in keys],
             }
         )
@@ -526,13 +543,19 @@ if __name__ == "__main__":
             )
             raise SystemExit(1)
 
-        print(f"메일 {r['mail_count']}통 (오류로 분류 {r['error_count']}통)\n")
-        print(f"{'오류':<5}{'수신시각':<18}{'키':<24}제목")
-        print("─" * 90)
+        print(f"메일 {r['mail_count']}통 (오류로 분류 {r['error_count']}통)")
+        print(f"오류 판정 키워드: {', '.join(MAIL_SUBJECT_KEYWORDS) or '(없음)'}\n")
+        print(f"{'오류':<5}{'수신시각':<18}{'걸린키워드':<12}{'키':<22}제목")
+        print("─" * 100)
         for m in r["mails"]:
             mark = "  O  " if m["is_error"] else "  .  "
             keys = ", ".join(m["keys"]) or ("-" if not m["is_error"] else "못찾음")
-            print(f"{mark}{m['received'][:16]:<18}{keys:<24}{m['subject'][:40]}")
+            # 걸린 키워드를 함께 보여 준다. 엉뚱한 메일이 O 로 찍히면
+            # 여기를 보고 바로 원인을 안다(예: 한 글자짜리 '오').
+            print(
+                f"{mark}{m['received'][:16]:<18}{(m['matched'] or '-'):<12}"
+                f"{keys:<22}{m['subject'][:40]}"
+            )
         for w in r["warnings"]:
             print(f"\n[확인 필요] {w}")
 

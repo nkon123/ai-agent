@@ -90,3 +90,28 @@ def test_derived_url_follows_overridden_port():
 def test_describe_shows_config_source():
     """어떤 값이 어디서 왔는지 기동 로그에 남아야 진단이 된다."""
     assert "config_local" in config.describe()
+
+
+def test_as_tuple_fixes_missing_comma():
+    """("오류") 는 튜플이 아니라 문자열이다.
+
+    그대로 순회하면 "오", "류" 한 글자씩 비교하게 되어 '오전', '오더'
+    같은 제목이 전부 오류로 잡힌다. 설정 파일은 사람이 손으로 쓰는 곳이라
+    받아 준다.
+    """
+    assert config._as_tuple("오류") == ("오류",)
+    assert config._as_tuple("오류,에러") == ("오류", "에러")
+    assert config._as_tuple(("오류", "에러")) == ("오류", "에러")
+    assert config._as_tuple(["오류"]) == ("오류",)
+
+
+def test_as_tuple_drops_empty_entries():
+    """빈 문자열이 남으면 '' in subject 가 항상 참이라 전부 걸린다."""
+    assert config._as_tuple("오류,,  ,에러") == ("오류", "에러")
+    assert config._as_tuple(("", "오류")) == ("오류",)
+
+
+def test_keyword_setting_is_always_a_tuple():
+    """정규화가 실제로 적용되어 있어야 한다."""
+    assert isinstance(config.MAIL_SUBJECT_KEYWORDS, tuple)
+    assert all(len(k) > 0 for k in config.MAIL_SUBJECT_KEYWORDS)

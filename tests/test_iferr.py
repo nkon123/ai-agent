@@ -367,3 +367,28 @@ def test_step_tool_survives_mail_failure(monkeypatch: Any):
     r = _run(_with_client(call))
     text = r.content[0].text
     assert "확인 필요" in text and "메일을 읽지 못했다" in text
+
+
+def test_matched_keyword_is_recorded(monkeypatch: Any):
+    """'왜 이 메일이 오류로 잡혔는지'가 결과에 남아야 한다."""
+    r = iferr.list_mails()
+    by_subject = {m["subject"]: m for m in r["mails"]}
+
+    err = by_subject["재고 연계 ERROR 발생 (배치)"]
+    assert err["is_error"] and err["matched"] == "ERROR"
+
+    ok = by_subject["주간 연계 처리 결과 보고"]
+    assert not ok["is_error"] and ok["matched"] == ""
+
+
+def test_single_char_keyword_shows_why_it_matched(monkeypatch: Any):
+    """설정을 잘못 써서 엉뚱한 메일이 걸려도 원인이 보여야 한다.
+
+    ("오류") 처럼 쉼표를 빠뜨리면 '오' 한 글자로 비교하게 된다.
+    config 가 정규화해 주지만, 직접 한 글자를 넣은 경우까지 막지는 않는다.
+    그때는 matched 로 원인을 찾는다.
+    """
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_KEYWORDS", ("오",))
+    r = iferr.list_mails()
+    hits = [m for m in r["mails"] if m["is_error"]]
+    assert all(m["matched"] == "오" for m in hits)

@@ -54,6 +54,19 @@ def _env_bool(key: str, default: bool) -> bool:
     return v.strip().lower() in ("1", "true", "yes", "y", "on")
 
 
+def _as_tuple(value: Any) -> tuple[str, ...]:
+    """문자열/리스트/튜플 무엇이 오든 문자열 튜플로 만든다.
+
+    ("오류") 는 튜플이 아니라 문자열이다(쉼표가 없다). 그대로 순회하면
+    "오", "류" 한 글자씩 검사하게 되어 '오전', '오더' 같은 제목이 전부
+    걸린다. 파이썬에서 가장 흔한 함정이고 눈으로는 잘 안 보인다.
+    설정 파일은 사람이 손으로 쓰는 곳이라 여기서 받아 준다.
+    """
+    if isinstance(value, str):
+        return tuple(v.strip() for v in value.split(",") if v.strip())
+    return tuple(str(v).strip() for v in value if str(v).strip())
+
+
 def _env_opt(key: str) -> str | None:
     """설정되지 않으면 None. DB 처럼 '없어도 되는' 값에 쓴다."""
     v = os.getenv(key)
@@ -282,6 +295,30 @@ def _load_local() -> None:
 
 _load_local()
 
+# 목록형 설정은 덮어쓰기가 끝난 뒤에 정규화한다.
+# config_local.py 에 ("오류") 처럼 쉼표를 빠뜨리면 문자열이 되는데,
+# 그대로 두면 한 글자씩 비교해 엉뚱한 메일이 오류로 잡힌다.
+CONFIG_NORMALIZED: list[str] = []
+for _name in (
+    "MAIL_SUBJECT_KEYWORDS",
+    "IFERR_STATUS_COLUMNS",
+    "CHAT_TOOL_TIERS",
+    "SOURCE_ROOTS",
+):
+    _value = globals()[_name]
+    if _name == "SOURCE_ROOTS":
+        continue          # dict 는 그대로 둔다
+    if isinstance(_value, str):
+        CONFIG_NORMALIZED.append(_name)
+    globals()[_name] = _as_tuple(_value)
+
+if CONFIG_NORMALIZED:
+    print(
+        "[config] 목록 설정이 문자열로 쓰여 있어 자동 변환했다(쉼표 확인): "
+        f"{', '.join(CONFIG_NORMALIZED)}  예: (\"오류\",) 처럼 쉼표를 붙일 것",
+        file=sys.stderr,
+    )
+
 # 파생값은 덮어쓰기가 끝난 뒤에 조립한다.
 if not MCP_SERVER_URL:
     MCP_SERVER_URL = f"http://{MCP_HTTP_HOST}:{MCP_HTTP_PORT}/mcp"
@@ -308,6 +345,7 @@ def describe() -> str:
         f"  ORACLE_USER  : {ORACLE_USER or '(미설정)'}",
         f"  ORACLE_PW    : {'설정됨' if ORACLE_PASSWORD else '(미설정)'}",
         f"  DB_TIMEOUT   : {DB_TIMEOUT_SEC}s",
+        f"  오류 키워드   : {', '.join(MAIL_SUBJECT_KEYWORDS) or '(없음 — 전부 대상 아님)'}",
         f"  MAIL         : {MAIL_BACKEND} / "
         + (MAIL_FOLDER or "(기본 받은 편지함)" if MAIL_BACKEND == "com" else MAIL_EML_DIR)
         + f" / 최근 {MAIL_LOOKBACK_HOURS}h",
