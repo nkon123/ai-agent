@@ -712,6 +712,87 @@ def lookup_key(key: str, detail: Detail = "full") -> dict[str, Any]:
     return run_iferr(key=key, detail=detail)
 
 
+def doctor(hours: int | None = None) -> list[tuple[str, bool, str]]:
+    """설정부터 DB 조회까지 순서대로 점검한다. [(단계, 성공, 메시지)]
+
+    단계마다 따로 실행하면 어디까지 됐는지 매번 다시 확인해야 한다.
+    한 번에 훑고, 실패한 단계에서 무엇을 해야 하는지 알려 준다.
+    앞 단계가 실패해도 뒤 단계를 건너뛰지 않는다 — 문제가 두 개일 수 있다.
+    """
+    steps: list[tuple[str, bool, str]] = []
+
+    # 1. 제목 판정 설정
+    problems = check_subject_rule()
+    steps.append(
+        (
+            "제목 판정 설정",
+            not problems,
+            f"[{MAIL_SUBJECT_MATCH}] {', '.join(MAIL_SUBJECT_KEYWORDS) or '(없음)'}"
+            + ("" if not problems else " — " + "; ".join(problems)),
+        )
+    )
+
+    # 2. 메일 읽기
+    mails = list_mails(hours=hours)
+    mail_ok = not (not mails["mails"] and mails["warnings"])
+    steps.append(
+        (
+            "메일 읽기",
+            mail_ok,
+            f"{mails['mail_count']}통 중 오류 {mails['error_count']}통"
+            if mail_ok
+            else "; ".join(mails["warnings"]) + "  → --folders 로 폴더 확인",
+        )
+    )
+
+    # 3. 키 추출
+    keys = [k for m in mails["mails"] for k in m["keys"]]
+    unmatched = [m for m in mails["mails"] if m["is_error"] and not m["keys"]]
+    steps.append(
+        (
+            "키 추출",
+            bool(keys) or not mails["mails"],
+            (f"{len(set(keys))}개: {', '.join(sorted(set(keys))[:5])}" if keys else "")
+            + (
+                f"  (키 못 뽑은 오류 메일 {len(unmatched)}통"
+                f" → --dump 2 로 본문 확인)"
+                if unmatched
+                else ""
+            )
+            + ("" if keys or not mails["mails"] else "키 접두어 설정 확인 "
+               "(IFERR_KEY_PREFIXES)"),
+        )
+    )
+
+    # 4. DB 접속
+    from core.oracle import check_connection
+
+    db_ok, db_msg = check_connection()
+    steps.append(("DB 접속", db_ok, db_msg))
+
+    # 5. 마스터 조회 — 실제 키로 한 건 돌려 본다
+    if not [v for v in IFERR_SQL.values() if v.strip()]:
+        steps.append(
+            ("마스터 조회", False, "IFERR_MASTER_TABLE / IFERR_MASTER_FIELDS 미설정")
+        )
+    elif not db_ok:
+        steps.append(("마스터 조회", False, "DB 접속이 안 되어 확인 불가"))
+    else:
+        probe = sorted(set(keys))[0] if keys else ""
+        if not probe:
+            steps.append(("마스터 조회", False, "확인할 키가 없다(메일에서 못 뽑음)"))
+        else:
+            case = lookup_key(probe, detail="summary")["cases"][0]
+            steps.append(
+                (
+                    "마스터 조회",
+                    case["status"] == "found",
+                    f"{probe}: {case['status']} — {case['impact']}",
+                )
+            )
+    return steps
+
+
 if __name__ == "__main__":
     import argparse
     import json
@@ -729,6 +810,8 @@ if __name__ == "__main__":
                     help="최근 오류 메일 N통의 본문을 out/ 에 저장(정규식 확인용)")
     ap.add_argument("--test-key", default="", metavar="TEXT",
                     help="붙여넣은 제목/본문에서 키가 뽑히는지 바로 확인")
+    ap.add_argument("--doctor", action="store_true",
+                    help="설정부터 DB 조회까지 한 번에 점검")
     ap.add_argument("--check-db", action="store_true", help="Oracle 접속 확인")
     ap.add_argument("--find-column", default="", metavar="NAME",
                     help="이름에 이 조각이 들어간 테이블·컬럼 찾기 (예: EAI)")
@@ -758,6 +841,20 @@ if __name__ == "__main__":
             print(f"  {h['key']:<24} (규칙 {h['rule']})")
             print(f"    근거: {h['evidence']}")
         raise SystemExit(0)
+
+    if args.doctor:
+        print(f"[점검] 최근 {args.hours or '설정값'}시간\n")
+        results = doctor(hours=args.hours)
+        for name, ok, msg in results:
+            print(f"  {'OK  ' if ok else '실패'}  {name:<14} {msg}")
+        failed = [n for n, ok, _ in results if not ok]
+        print()
+        if failed:
+            print(f"확인 필요: {', '.join(failed)}")
+            print("  자세히: agents/iferr/README.md 의 '증상별 확인 지점'")
+        else:
+            print("전부 정상 — python app/app.py 로 챗봇을 띄워도 된다")
+        raise SystemExit(1 if failed else 0)
 
     if args.check_db:
         from core.oracle import check_connection

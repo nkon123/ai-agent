@@ -972,3 +972,63 @@ def test_schedule_reaches_summary(monkeypatch: Any):
     s = run_iferr(key="X1", detail="summary")["cases"][0]
     assert s["flows"][0]["schedule"] == "매일 09:05"
     assert "매일 09:05" in s["impact"]
+
+
+# --------------------------------------------------------------------------
+# --doctor (한 번에 점검)
+# --------------------------------------------------------------------------
+
+
+def test_doctor_reports_every_step(monkeypatch: Any):
+    """앞 단계가 실패해도 뒤 단계를 건너뛰지 않는다. 문제가 둘일 수 있다."""
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_MATCH", "startswith")
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_KEYWORDS", ("(EAA) Alert Mail",))
+
+    steps = {name: (ok, msg) for name, ok, msg in iferr.doctor()}
+    assert set(steps) == {
+        "제목 판정 설정", "메일 읽기", "키 추출", "DB 접속", "마스터 조회"
+    }
+    # DB 는 설정이 없으니 실패지만, 그 앞 단계들은 정상으로 나와야 한다.
+    assert steps["메일 읽기"][0] is True
+    assert steps["DB 접속"][0] is False
+
+
+def test_doctor_flags_mail_failure_with_next_step(monkeypatch: Any):
+    """실패에는 다음에 뭘 해야 하는지가 붙어야 한다."""
+    monkeypatch.setattr(outlook, "MAIL_EML_DIR", "./no/such/dir")
+    steps = {name: (ok, msg) for name, ok, msg in iferr.doctor()}
+    ok, msg = steps["메일 읽기"]
+    assert ok is False and "--folders" in msg
+
+
+def test_doctor_flags_missing_keys(monkeypatch: Any):
+    """오류 메일은 있는데 키를 못 뽑으면 그 사실이 드러나야 한다."""
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_MATCH", "contains")
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_KEYWORDS", ("응답 없음",))
+    monkeypatch.setattr(iferr, "_COMPILED", [])      # 어떤 패턴도 없다
+
+    steps = {name: (ok, msg) for name, ok, msg in iferr.doctor()}
+    ok, msg = steps["키 추출"]
+    assert ok is False and "IFERR_KEY_PREFIXES" in msg
+
+
+def test_doctor_runs_a_real_lookup(monkeypatch: Any):
+    """설정이 다 되어 있으면 실제 키로 조회까지 해 본다."""
+    _fake_master(
+        monkeypatch,
+        [{"IFID": "ABCIF0001234", "SRCSYS": "SAP", "TARSYS": "ERP",
+          "SRCTNAME": "A", "TARTNAME": "B", "SCH_DAY": "*", "SCH_H": "8",
+          "SCH_M": "30"}],
+    )
+    monkeypatch.setattr(iferr, "IFERR_MASTER_FIELDS", _master_fields_with_schedule())
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_MATCH", "startswith")
+    monkeypatch.setattr(iferr, "MAIL_SUBJECT_KEYWORDS", ("(EAA) Alert Mail",))
+    _with_prefix(monkeypatch)
+    monkeypatch.setattr(
+        iferr.oracle, "check_connection", lambda timeout=None: (True, "접속 OK")
+    )
+
+    steps = {name: (ok, msg) for name, ok, msg in iferr.doctor()}
+    ok, msg = steps["마스터 조회"]
+    assert ok is True
+    assert "ABCIF0001234" in msg and "매일 08:30" in msg

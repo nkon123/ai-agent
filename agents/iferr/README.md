@@ -16,6 +16,29 @@ python agents/iferr/agent.py --key IF_ORD_SEND  # 메일을 읽지 않고 이 �
 MAIL_BACKEND=eml python agents/iferr/agent.py   # 파일로 테스트
 ```
 
+## 점검은 이 한 줄로
+
+```bat
+python agents\iferr\agent.py --doctor --hours 72
+```
+
+```
+[점검] 최근 72시간
+
+  OK    제목 판정 설정       [startswith] (EAA) Alert Mail
+  OK    메일 읽기          38통 중 오류 4통
+  OK    키 추출           2개: EAIIF0001234, EAIIF0009999
+  OK    DB 접속           접속 OK (dsn=..., 접속계정=ERP_READ, 모드=thick, ...)
+  OK    마스터 조회         EAIIF0001234: found — SAP.ZORDER → ERP.IF_ORD (매일 08:30, 12:00)
+
+전부 정상 — python app/app.py 로 챗봇을 띄워도 된다
+```
+
+설정부터 실제 DB 조회까지 순서대로 확인한다. 앞 단계가 실패해도 뒤 단계를
+건너뛰지 않는다 — 문제가 두 개일 수 있다. 실패한 줄에 다음에 할 일이 붙는다.
+
+아래는 단계별로 따로 볼 때 쓰는 명령들이다.
+
 ## 사내 PC 첫 점검 (DB 없이 메일만)
 
 DB 설정 전에 메일부터 확인한다. 아래 셋은 **DB 를 건드리지 않는다.**
