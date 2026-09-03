@@ -339,8 +339,8 @@ SQL 이 비어 있으면 키 추출까지만 하고 **"확인 불가"** 로 남�
 
 | 툴 | 등급 | 메일 | DB | 무엇 |
 |---|---|---|---|---|
-| `check_interface_errors(hours, key)` | combo | ○ | ○ | 전체를 한 번에 |
-| `list_error_mails(hours)` | step | ○ | ✕ | 메일이 오긴 왔는지 |
+| `check_interface_errors(period, key)` | combo | ○ | ○ | 전체를 한 번에 |
+| `list_error_mails(period)` | step | ○ | ✕ | 메일이 오긴 왔는지 |
 | `extract_interface_keys(text)` | step | ✕ | ✕ | 붙여 넣은 본문에서 키만 |
 | `lookup_interface(key)` | step | ✕ | ○ | 키를 이미 알 때 |
 
@@ -353,6 +353,28 @@ SQL 이 비어 있으면 키 추출까지만 하고 **"확인 불가"** 로 남�
 | `iferr://detail/{key}` | `detail="full"` — 메일 목록 + 조회 행 전부 |
 
 annotations: `readOnly=true`, `destructive=false`
+
+### 기간은 사용자 말 그대로 받는다
+
+`period` 에는 `"3일"`, `"오늘"`, `"12시간"` 처럼 **사용자가 말한 그대로** 넣는다.
+시간 수 계산은 툴이 한다.
+
+> 소형 모델에 계산을 맡기면 `"3일"` 을 `hours=3` 으로 넣는다. 실제로 그래서
+> 3일치가 아니라 3시간치만 보고 "없다"고 답했다.
+
+| 입력 | 결과 |
+|---|---|
+| `3일` / `최근 3일` / `3 days` | 72시간 |
+| `12시간` / `12h` | 12시간 |
+| `2주` | 336시간 |
+| `오늘` | 자정부터 |
+| `어제` | 어제 자정부터 |
+| `3` (단위 없음) | 3시간 |
+| 못 알아들으면 | 기본값 + **"확인 필요"** 경고 |
+
+답에는 항상 실제로 본 기간이 찍힌다 (`최근 3일(72시간) 메일 38통에서 …`).
+MCP 는 모르는 인자를 조용히 버리므로, 모델이 없는 인자를 넣어도 사용자가
+알아챌 수 있어야 한다.
 
 ```
 GET /api/resource?template=iferr://detail/{key}&key=IF_ORD_SEND

@@ -254,11 +254,13 @@ def test_mcp_tool_reports_unknown_clearly():
     """'확인 불가'가 '문제 없음'으로 읽히면 안 된다."""
 
     async def call(c: Client) -> Any:
-        return await c.call_tool("check_interface_errors", {"hours": 24})
+        return await c.call_tool("check_interface_errors", {"period": "3일"})
 
     text = _run(_with_client(call)).content[0].text
     assert "IF_ORD_SEND" in text
     assert "확인 불가" in text and "확인 필요" in text
+    # 어느 기간을 본 것인지 답에 반드시 드러나야 한다.
+    assert "최근 3일(72시간)" in text
 
 
 def test_mcp_tool_is_read_only():
@@ -300,7 +302,7 @@ def test_step_tool_list_error_mails_does_not_touch_db(monkeypatch: Any):
     monkeypatch.setattr(iferr.oracle, "query", boom)
 
     async def call(c: Client) -> Any:
-        return await c.call_tool("list_error_mails", {"hours": 24})
+        return await c.call_tool("list_error_mails", {"period": "3일"})
 
     text = _run(_with_client(call)).content[0].text
     assert "IF_ORD_SEND" in text
@@ -377,7 +379,7 @@ def test_step_tool_survives_mail_failure(monkeypatch: Any):
     monkeypatch.setattr(outlook, "MAIL_EML_DIR", "./no/such/dir")
 
     async def call(c: Client) -> Any:
-        return await c.call_tool("list_error_mails", {"hours": 24})
+        return await c.call_tool("list_error_mails", {"period": "3일"})
 
     r = _run(_with_client(call))
     text = r.content[0].text
@@ -1032,3 +1034,59 @@ def test_doctor_runs_a_real_lookup(monkeypatch: Any):
     ok, msg = steps["마스터 조회"]
     assert ok is True
     assert "ABCIF0001234" in msg and "매일 08:30" in msg
+
+
+# --------------------------------------------------------------------------
+# 기간 해석 (소형 모델이 "3일"을 3으로 넣던 문제)
+# --------------------------------------------------------------------------
+
+
+def test_parse_period_days_and_hours():
+    """'3일'은 72시간이다. 모델에 계산을 맡기면 3을 넣는다 — 실제로 그랬다."""
+    assert iferr.parse_period("3일", 24)[0] == 72
+    assert iferr.parse_period("최근 3일", 24)[0] == 72
+    assert iferr.parse_period("72시간", 24)[0] == 72
+    assert iferr.parse_period("2주", 24)[0] == 336
+    assert iferr.parse_period("3 days", 24)[0] == 72
+
+
+def test_parse_period_bare_number_is_hours():
+    """단위 없는 숫자는 예전 인자와 같은 뜻(시간)으로 본다."""
+    assert iferr.parse_period("3", 24)[0] == 3
+
+
+def test_parse_period_empty_uses_default():
+    hours, label, warn = iferr.parse_period("", 24)
+    assert hours == 24 and not warn and "24시간" in label
+
+
+def test_parse_period_unknown_warns_instead_of_silent_default():
+    """못 알아들으면 조용히 기본값을 쓰지 않는다.
+
+    '3일이라 했는데 왜 하루치지'를 알 수 있어야 한다.
+    """
+    hours, _, warn = iferr.parse_period("내일모레쯤", 24)
+    assert hours == 24
+    assert "이해하지 못해" in warn and "확인 필요" in warn
+
+
+def test_tool_reports_the_period_it_used():
+    """답에 기간이 드러나야 한다.
+
+    MCP 는 모르는 인자를 조용히 버린다. 모델이 hours=72 처럼 없는 인자를
+    넣으면 기본값으로 돌게 되는데, 그때도 사용자가 알아챌 수 있어야 한다.
+    """
+
+    async def call(c: Client) -> Any:
+        return await c.call_tool("check_interface_errors", {"hours": 72})
+
+    text = _run(_with_client(call)).content[0].text
+    assert "최근 24시간" in text     # 무시된 인자 대신 기본값을 썼음이 드러난다
+
+
+def test_tool_warns_on_unparsed_period():
+    async def call(c: Client) -> Any:
+        return await c.call_tool("check_interface_errors", {"period": "언젠가"})
+
+    text = _run(_with_client(call)).content[0].text
+    assert "이해하지 못해" in text

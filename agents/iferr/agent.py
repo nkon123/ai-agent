@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, TypedDict
 
@@ -40,6 +41,7 @@ from config import (  # noqa: E402
     IFERR_MAX_ROWS,
     IFERR_SQL,
     IFERR_STATUS_COLUMNS,
+    MAIL_LOOKBACK_HOURS,
     MAIL_SUBJECT_KEYWORDS,
     MAIL_SUBJECT_MATCH,
     MAIL_SUBJECT_STRIP_PREFIXES,
@@ -205,6 +207,54 @@ def check_subject_rule() -> list[str]:
             except re.error as e:
                 problems.append(f"정규식이 잘못됐다: {k!r} — {e}")
     return problems
+
+
+# "3일", "12시간" 같은 기간 표현. 단위별 시간 수.
+_PERIOD_UNITS: tuple[tuple[str, int], ...] = (
+    ("주", 24 * 7), ("week", 24 * 7), ("w", 24 * 7),
+    ("일", 24), ("day", 24), ("d", 24),
+    ("시간", 1), ("hour", 1), ("hr", 1), ("h", 1),
+)
+
+
+def parse_period(text: str, default_hours: int) -> tuple[int, str, str]:
+    """기간 표현을 시간 수로. (시간, 표시문구, 경고)
+
+    소형 모델에 시간 수를 계산시키면 "3일"을 3으로 넣는다. 실제로 그랬다.
+    그래서 툴은 사용자가 말한 기간을 '그대로' 받고, 계산은 여기서 한다.
+
+    못 알아들으면 조용히 기본값을 쓰지 않는다. 기본값을 쓰되 경고를 남겨
+    "3일이라 했는데 왜 하루치지"를 알 수 있게 한다.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return default_hours, f"최근 {default_hours}시간", ""
+
+    lowered = raw.lower().replace("최근", "").replace("지난", "").strip()
+
+    now = datetime.now()
+    if "오늘" in lowered or "today" in lowered:
+        # 자정부터. 최소 1시간은 봐야 방금 온 메일이 빠지지 않는다.
+        return max(1, now.hour + 1), "오늘", ""
+    if "어제" in lowered or "yesterday" in lowered:
+        return now.hour + 25, "어제부터", ""
+
+    m = re.search(r"(\d+)\s*([A-Za-z가-힣]*)", lowered)
+    if m:
+        n = int(m.group(1))
+        unit = m.group(2)
+        for suffix, mult in _PERIOD_UNITS:
+            if unit.startswith(suffix):
+                hours = max(1, n * mult)
+                return hours, f"최근 {n}{suffix}", ""
+        if not unit:
+            # 단위 없는 숫자는 시간으로 본다(예전 인자와 같은 뜻).
+            return max(1, n), f"최근 {n}시간", ""
+
+    return default_hours, f"최근 {default_hours}시간", (
+        f"기간 '{raw}' 를 이해하지 못해 기본값({default_hours}시간)으로 조회했다 "
+        "— 확인 필요"
+    )
 
 
 def is_error_mail(mail: Mail) -> bool:
