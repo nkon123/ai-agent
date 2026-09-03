@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Literal, TypedDict
 
@@ -35,6 +36,10 @@ from config import (  # noqa: E402
     SQLTUNE_COMPARE,
     SQLTUNE_COMPARE_COUNT,
     SQLTUNE_EXECUTE,
+    SQLTUNE_INTERLEAVE_RUNS,
+    SQLTUNE_PARALLEL_COUNT,
+    SQLTUNE_PARALLEL_EXPLAIN,
+    SQLTUNE_PARALLEL_MAX,
     SQLTUNE_MAX_ROWS,
     SQLTUNE_RULES_FILE,
     SQLTUNE_RUNS,
@@ -355,6 +360,9 @@ class TuneState(TypedDict, total=False):
     execute: bool
     compare: bool
     compare_count: bool
+    parallel_explain: bool
+    parallel_count: bool
+    interleave: bool
     candidates: list[dict[str, Any]]
     comparison: list[dict[str, Any]]
     best: str
@@ -439,6 +447,12 @@ def run_check(state: TuneState) -> TuneState:
     실행은 곧 운영 DB 부하다. 사람이 --run 으로 켤 때만 돈다.
     """
     if not state.get("safe") or not state.get("execute"):
+        return {}
+
+    # 후보 비교를 할 거면 여기서 재지 않는다. compare 가 원본까지 같은
+    # 조건으로 재기 때문에, 여기서 또 재면 느린 원본을 쓸데없이 한 번 더
+    # 실행하는 셈이다(교차 반복 순서도 흐트러진다).
+    if state.get("compare") and state.get("candidates"):
         return {}
 
     warnings = list(state.get("warnings") or [])
@@ -528,13 +542,26 @@ def propose(state: TuneState) -> TuneState:
         return {"warnings": warnings}
 
 
-def _measure(sql: str, want_count: bool, want_run: bool) -> dict[str, Any]:
-    """쿼리 하나를 재 본다. 실패는 사유로 남긴다(예외로 죽지 않는다)."""
-    out: dict[str, Any] = {"cost": None, "rows": None, "elapsed_sec": None,
-                           "buffers": None, "errors": []}
-    clean = strip_trailing_semicolon(sql)
+def _run_maybe_parallel(fn: Any, items: list[Any], parallel: bool) -> list[Any]:
+    """items 에 fn 을 적용한다. parallel 이면 스레드로 동시에.
+
+    커넥션은 호출마다 새로 열리므로(core.oracle.get_conn) 스레드끼리
+    공유하는 상태가 없다. 다만 세션 수가 늘어나므로 상한을 둔다.
+    순서는 입력 순서를 유지한다 — 결과를 후보와 짝지어야 한다.
+    """
+    if not parallel or len(items) <= 1:
+        return [fn(x) for x in items]
+    with ThreadPoolExecutor(
+        max_workers=min(SQLTUNE_PARALLEL_MAX, len(items))
+    ) as pool:
+        return list(pool.map(fn, items))
+
+
+def _measure_plan(sql: str) -> dict[str, Any]:
+    """실행계획만 받는다. 쿼리를 실행하지 않아 부하가 거의 없다."""
+    out: dict[str, Any] = {"cost": None, "plan_rows": 0, "errors": []}
     try:
-        plan = oracle.explain_plan(clean)
+        plan = oracle.explain_plan(strip_trailing_semicolon(sql))
         out["plan_rows"] = len(plan)
         # 루트(ID 0)의 Cost 가 옵티마이저 추정 비용이다.
         for row in plan:
@@ -543,25 +570,74 @@ def _measure(sql: str, want_count: bool, want_run: bool) -> dict[str, Any]:
                 break
     except Exception as e:
         out["errors"].append(f"explain: {type(e).__name__}: {e}")
-
-    if want_count:
-        try:
-            out["rows"] = oracle.count_rows(clean, timeout=SQLTUNE_TIMEOUT_SEC)
-        except Exception as e:
-            out["errors"].append(f"count: {type(e).__name__}: {e}")
-
-    if want_run:
-        try:
-            r = oracle.execute_with_stats(
-                clean, max_rows=SQLTUNE_MAX_ROWS,
-                timeout=SQLTUNE_TIMEOUT_SEC, runs=SQLTUNE_RUNS,
-            )
-            out["elapsed_sec"] = r["elapsed_sec"]
-            out["buffers"] = r["buffers"]
-            out["truncated"] = r.get("truncated")
-        except Exception as e:
-            out["errors"].append(f"run: {type(e).__name__}: {e}")
     return out
+
+
+def _measure_count(sql: str) -> dict[str, Any]:
+    """건수만 센다. 경합이 있어도 값은 바뀌지 않는다(결정적)."""
+    try:
+        return {
+            "rows": oracle.count_rows(
+                strip_trailing_semicolon(sql), timeout=SQLTUNE_TIMEOUT_SEC
+            ),
+            "errors": [],
+        }
+    except Exception as e:
+        return {"rows": None, "errors": [f"count: {type(e).__name__}: {e}"]}
+
+
+def _measure_run_once(sql: str) -> dict[str, Any]:
+    """한 번 수행하고 시간과 실제 계획을 받는다.
+
+    이 함수는 절대 병렬로 부르지 않는다. 동시에 돌리면 서로 CPU·I/O·
+    버퍼캐시를 뺏어 재려던 수치가 오염된다.
+    """
+    try:
+        r = oracle.execute_with_stats(
+            strip_trailing_semicolon(sql),
+            max_rows=SQLTUNE_MAX_ROWS,
+            timeout=SQLTUNE_TIMEOUT_SEC,
+            runs=1,
+        )
+        return {
+            "elapsed_sec": r["elapsed_sec"],
+            "buffers": r["buffers"],
+            "truncated": r.get("truncated"),
+            "errors": [],
+        }
+    except Exception as e:
+        return {"errors": [f"run: {type(e).__name__}: {e}"]}
+
+
+def _time_entries(entries: list[dict[str, Any]], interleave: bool) -> None:
+    """수행시간을 잰다. entries 를 제자리에서 갱신한다.
+
+    interleave=True 면 A,B,A,B 순으로 돈다. False 면 A,A,B,B 다.
+    연속으로 돌리면 뒤에 측정한 쪽이 앞 쿼리가 데워 놓은 캐시 덕을 본다.
+    교차하면 그 편향이 줄어든다.
+
+    각 후보의 값은 여러 회 중 **최소값**을 쓴다. 첫 회에는 하드파싱과
+    캐시 적재가 섞이기 때문이다.
+    """
+    runs = max(1, SQLTUNE_RUNS)
+    order = (
+        [(r, e) for r in range(runs) for e in entries]
+        if interleave
+        else [(r, e) for e in entries for r in range(runs)]
+    )
+    for _round, entry in order:
+        if entry.get("rejected"):
+            continue
+        got = _measure_run_once(entry["sql"])
+        entry.setdefault("errors", []).extend(got.get("errors") or [])
+        if got.get("elapsed_sec") is None:
+            continue
+        prev = entry.get("elapsed_sec")
+        if prev is None or got["elapsed_sec"] < prev:
+            entry["elapsed_sec"] = got["elapsed_sec"]
+        # Buffers 는 실행마다 거의 같다. 마지막 값을 쓴다.
+        entry["buffers"] = got.get("buffers")
+        entry["truncated"] = got.get("truncated")
 
 
 def _score(entry: dict[str, Any]) -> tuple[float, float, float]:
@@ -581,6 +657,14 @@ def _score(entry: dict[str, Any]) -> tuple[float, float, float]:
 def compare(state: TuneState) -> TuneState:
     """원본과 후보들을 같은 기준으로 재고 순위를 매긴다.
 
+    3단계로 나눈다. 단계마다 병렬 여부가 다르다.
+
+        1) EXPLAIN  — 병렬 가능. 실행이 아니라 파싱이라 부하가 거의 없다
+        2) COUNT    — 병렬 가능하지만 기본은 순차. 건수는 결정적이라
+                      경합이 있어도 값이 안 바뀌지만 순간 부하가 커진다
+        3) 수행시간  — **항상 순차**. 동시에 돌리면 서로 자원을 뺏어
+                      재려던 수치가 오염된다. 대신 교차 반복으로 캐시 편향을 줄인다
+
     후보는 원본과 똑같은 안전 게이트를 통과해야 한다. LLM 이 만든 SQL 도
     사용자 입력과 다를 바 없다.
     """
@@ -594,34 +678,68 @@ def compare(state: TuneState) -> TuneState:
 
     want_count = bool(state.get("compare_count"))
     want_run = bool(state.get("execute"))
+    par_explain = bool(state.get("parallel_explain", SQLTUNE_PARALLEL_EXPLAIN))
+    par_count = bool(state.get("parallel_count", SQLTUNE_PARALLEL_COUNT))
+    interleave = bool(state.get("interleave", SQLTUNE_INTERLEAVE_RUNS))
 
-    baseline = {"name": "원본", "sql": state["sql"], "reason": "", "based_on": [],
-                **_measure(state["sql"], want_count, want_run)}
-    rows = [baseline]
-
+    entries: list[dict[str, Any]] = [
+        {"name": "원본", "sql": state["sql"], "reason": "", "based_on": [], "errors": []}
+    ]
     for cand in state.get("candidates") or []:
         ok, why = is_safe_select(cand["sql"])
+        entry = {**cand, "errors": []}
         if not ok:
-            # LLM 이 만든 SQL 도 그대로 믿지 않는다.
-            rows.append({**cand, "rejected": f"안전 검사 탈락: {why}", "errors": []})
+            entry["rejected"] = f"안전 검사 탈락: {why}"
             warnings.append(f"{cand['name']} 안전 검사 탈락 — {why}")
-            continue
+        entries.append(entry)
 
-        measured = {**cand, **_measure(cand["sql"], want_count, want_run)}
+    live = [e for e in entries if not e.get("rejected")]
 
-        if want_count and baseline.get("rows") is not None:
-            if measured.get("rows") is None:
-                measured["rejected"] = "건수를 세지 못했다"
-            elif measured["rows"] != baseline["rows"]:
-                # 건수가 달라지면 튜닝이 아니라 버그다. 조용히 순위에 넣지 않는다.
-                measured["rejected"] = (
-                    f"결과 건수가 다르다 (원본 {baseline['rows']}건 → "
-                    f"{measured['rows']}건) — 튜닝이 아니라 버그다"
+    # ---- 1단계: 실행계획 -------------------------------------------------
+    for entry, got in zip(
+        live, _run_maybe_parallel(_measure_plan, [e["sql"] for e in live], par_explain)
+    ):
+        entry.update({k: v for k, v in got.items() if k != "errors"})
+        entry["errors"].extend(got["errors"])
+
+    # ---- 2단계: 건수 -----------------------------------------------------
+    if want_count:
+        for entry, got in zip(
+            live,
+            _run_maybe_parallel(_measure_count, [e["sql"] for e in live], par_count),
+        ):
+            entry["rows"] = got["rows"]
+            entry["errors"].extend(got["errors"])
+
+        baseline_rows = entries[0].get("rows")
+        for entry in live[1:]:
+            if baseline_rows is None:
+                continue
+            if entry.get("rows") is None:
+                entry["rejected"] = "건수를 세지 못했다"
+            elif entry["rows"] != baseline_rows:
+                # 건수가 달라지면 튜닝이 아니라 버그다. 순위에 넣지 않는다.
+                entry["rejected"] = (
+                    f"결과 건수가 다르다 (원본 {baseline_rows}건 → "
+                    f"{entry['rows']}건) — 튜닝이 아니라 버그다"
                 )
-                warnings.append(f"{cand['name']} {measured['rejected']}")
-        rows.append(measured)
+                warnings.append(f"{entry['name']} {entry['rejected']}")
+        if par_count:
+            warnings.append(
+                f"건수를 병렬로 셌다(동시 {min(SQLTUNE_PARALLEL_MAX, len(live))}개) "
+                "— 순간 부하가 그만큼 컸다"
+            )
 
-    ranked = [r for r in rows if not r.get("rejected") and not r.get("errors")]
+    # ---- 3단계: 수행시간 -------------------------------------------------
+    if want_run:
+        _time_entries([e for e in live if not e.get("rejected")], interleave)
+        if not interleave and len(live) > 1:
+            warnings.append(
+                "수행시간을 교차 반복 없이 쟀다 — 뒤에 측정한 쪽이 앞 쿼리가 "
+                "데워 놓은 캐시 덕을 봤을 수 있다"
+            )
+
+    ranked = [e for e in entries if not e.get("rejected") and not e.get("errors")]
     ranked.sort(key=_score)
     best = ranked[0]["name"] if ranked else ""
 
@@ -631,7 +749,7 @@ def compare(state: TuneState) -> TuneState:
             "결과 건수를 비교하지 않았다 — 후보가 같은 결과를 내는지 확인할 것 "
             "(--count 로 켤 수 있다)"
         )
-    return {"comparison": rows, "best": best, "warnings": warnings}
+    return {"comparison": entries, "best": best, "warnings": warnings}
 
 
 @cached(ttl=3600, maxsize=1, key=lambda: "graph")
@@ -647,9 +765,11 @@ def _graph():
     g.add_edge("guard", "static_check")
     g.add_edge("static_check", "plan_check")
     g.add_edge("plan_check", "index_check")
-    g.add_edge("index_check", "run_check")
-    g.add_edge("run_check", "propose")
-    g.add_edge("propose", "compare")
+    # propose(후보 생성)를 run_check 앞에 둔다. 그래야 run_check 가
+    # '비교를 할 것인지'를 알고 중복 측정을 건너뛸 수 있다.
+    g.add_edge("index_check", "propose")
+    g.add_edge("propose", "run_check")
+    g.add_edge("run_check", "compare")
     g.add_edge("compare", END)
     return g.compile()
 
@@ -659,6 +779,9 @@ def run_sqltune(
     execute: bool | None = None,
     compare_candidates: bool | None = None,
     compare_count: bool | None = None,
+    parallel_explain: bool | None = None,
+    parallel_count: bool | None = None,
+    interleave: bool | None = None,
     detail: Detail = "full",
 ) -> dict[str, Any]:
     """진입점.
@@ -671,6 +794,12 @@ def run_sqltune(
     compare_candidates : 개선 후보를 만들어 비교 (None 이면 config.SQLTUNE_COMPARE)
     compare_count      : 결과 건수까지 비교 (None 이면 config.SQLTUNE_COMPARE_COUNT).
                          건수 비교는 원본·후보를 각각 COUNT(*)로 감싸 실행한다.
+    parallel_explain   : 실행계획을 병렬로 (기본 켜짐, 부하 거의 없음)
+    parallel_count     : 건수를 병렬로 (기본 꺼짐, 순간 부하가 후보 수만큼)
+    interleave         : 수행시간을 교차 반복(A,B,A,B)으로 (기본 켜짐)
+
+    수행시간 측정은 어떤 설정에서도 병렬로 하지 않는다 — 동시에 돌리면
+    서로 자원을 뺏어 재려던 수치가 오염된다.
     """
     want_count = SQLTUNE_COMPARE_COUNT if compare_count is None else bool(compare_count)
     state: TuneState = _graph().invoke(
@@ -680,6 +809,12 @@ def run_sqltune(
             "compare": SQLTUNE_COMPARE if compare_candidates is None
             else bool(compare_candidates),
             "compare_count": want_count,
+            "parallel_explain": SQLTUNE_PARALLEL_EXPLAIN
+            if parallel_explain is None else bool(parallel_explain),
+            "parallel_count": SQLTUNE_PARALLEL_COUNT
+            if parallel_count is None else bool(parallel_count),
+            "interleave": SQLTUNE_INTERLEAVE_RUNS
+            if interleave is None else bool(interleave),
         }
     )
     findings = state.get("findings") or []
@@ -760,6 +895,12 @@ if __name__ == "__main__":
                     help="LLM 개선 후보를 만들어 원본과 플랜을 비교")
     ap.add_argument("--count", action="store_true",
                     help="결과 건수까지 비교 (원본·후보를 COUNT(*)로 감싸 실행)")
+    ap.add_argument("--no-parallel-explain", action="store_true",
+                    help="실행계획을 순차로 받는다 (기본은 병렬)")
+    ap.add_argument("--parallel-count", action="store_true",
+                    help="건수를 병렬로 센다 (빠르지만 순간 부하가 후보 수만큼 커진다)")
+    ap.add_argument("--no-interleave", action="store_true",
+                    help="수행시간을 교차 반복하지 않는다 (기본은 A,B,A,B 교차)")
     ap.add_argument("--detail", choices=["full", "summary", "minimal"], default="full")
     ap.add_argument("--json", action="store_true", help="JSON 으로 출력")
     args = ap.parse_args()
@@ -771,6 +912,9 @@ if __name__ == "__main__":
         # --count 는 후보 비교의 일부다. 따로 켜면 비교도 함께 켠다.
         compare_candidates=args.compare or args.count,
         compare_count=args.count,
+        parallel_explain=not args.no_parallel_explain,
+        parallel_count=args.parallel_count,
+        interleave=not args.no_interleave,
         detail=args.detail,
     )
 

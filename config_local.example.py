@@ -162,3 +162,10 @@ IFERR_MASTER_FIELDS = {
 # 결과 건수까지 비교할 것인가. 원본·후보를 각각 COUNT(*) 로 감싸 실행하므로
 # DB 는 원본만큼 일한다. CLI 는 --count. 켜면 건수가 다른 후보는 탈락한다.
 # SQLTUNE_COMPARE_COUNT = False
+
+# 병렬 처리. 수행시간 측정은 어떤 설정에서도 병렬로 하지 않는다
+# (동시에 돌리면 서로 자원을 뺏어 재려던 수치가 오염된다).
+# SQLTUNE_PARALLEL_EXPLAIN = True    # 실행계획 병렬 (부하 거의 없음)
+# SQLTUNE_PARALLEL_COUNT = False     # 건수 병렬 (순간 부하가 후보 수만큼 커짐)
+# SQLTUNE_INTERLEAVE_RUNS = True     # 수행시간 교차 반복 (A,B,A,B)
+# SQLTUNE_PARALLEL_MAX = 4           # 동시 DB 세션 상한

@@ -310,14 +310,14 @@ def _rebuild_graph():
     for name, fn in (
         ("guard", sqltune.guard), ("static_check", sqltune.static_check),
         ("plan_check", sqltune.plan_check), ("index_check", sqltune.index_check),
-        ("run_check", sqltune.run_check), ("propose", sqltune.propose),
+        ("propose", sqltune.propose), ("run_check", sqltune.run_check),
         ("compare", sqltune.compare),
     ):
         g.add_node(name, fn)
     g.add_edge(START, "guard")
     for a, b in (("guard", "static_check"), ("static_check", "plan_check"),
-                 ("plan_check", "index_check"), ("index_check", "run_check"),
-                 ("run_check", "propose"), ("propose", "compare")):
+                 ("plan_check", "index_check"), ("index_check", "propose"),
+                 ("propose", "run_check"), ("run_check", "compare")):
         g.add_edge(a, b)
     g.add_edge("compare", END)
     return g.compile()
@@ -406,3 +406,138 @@ def test_compare_is_off_by_default(monkeypatch: Any):
     r = run_sqltune("SELECT a FROM ORD_HDR", detail="full")
     assert r["comparison"] == []
     assert not any(c.startswith("count:") for c in seen)
+
+
+# --------------------------------------------------------------------------
+# 병렬 / 교차 반복 — 무엇을 동시에 하고 무엇을 하지 않는가
+# --------------------------------------------------------------------------
+
+
+def _trace_db(monkeypatch: Any) -> dict[str, Any]:
+    """호출 순서와 동시성을 기록하는 가짜 DB."""
+    import threading
+    import time as _t
+
+    state = {"order": [], "explain_peak": 0, "count_peak": 0, "run_peak": 0}
+    live = {"explain": 0, "count": 0, "run": 0}
+    lock = threading.Lock()
+
+    def enter(kind: str, sql: str) -> None:
+        with lock:
+            live[kind] += 1
+            state[f"{kind}_peak"] = max(state[f"{kind}_peak"], live[kind])
+            tag = "원본" if "TO_CHAR" in sql else ("A" if "cand_a" in sql else "B")
+            state["order"].append(f"{kind}:{tag}")
+
+    def leave(kind: str) -> None:
+        with lock:
+            live[kind] -= 1
+
+    def fake_explain(sql: str, timeout: Any = None):
+        enter("explain", sql); _t.sleep(0.05); leave("explain")
+        return [{"ID": 0, "OPERATION": "SELECT STATEMENT", "COST": 10}]
+
+    def fake_count(sql: str, timeout: Any = None):
+        enter("count", sql); _t.sleep(0.05); leave("count")
+        return 100
+
+    def fake_run(sql: str, binds: Any = None, max_rows: int = 100,
+                 timeout: Any = None, runs: int = 2):
+        enter("run", sql); _t.sleep(0.02); leave("run")
+        return {"elapsed_sec": 1.0, "buffers": 500, "rows_fetched": 1,
+                "truncated": False, "plan_text": "", "elapsed_all": []}
+
+    monkeypatch.setattr(sqltune.oracle, "is_configured", lambda: True)
+    monkeypatch.setattr(sqltune.oracle, "existing_indexes", lambda t, schema=None: [])
+    monkeypatch.setattr(sqltune.oracle, "explain_plan", fake_explain)
+    monkeypatch.setattr(sqltune.oracle, "count_rows", fake_count)
+    monkeypatch.setattr(sqltune.oracle, "execute_with_stats", fake_run)
+    _fake_candidates(monkeypatch, [
+        {"name": "후보1", "sql": "SELECT cand_a FROM T", "reason": "a", "based_on": []},
+        {"name": "후보2", "sql": "SELECT cand_b FROM T", "reason": "b", "based_on": []},
+    ])
+    return state
+
+
+def test_explain_runs_in_parallel_by_default(monkeypatch: Any):
+    """EXPLAIN 은 실행이 아니라 파싱이라 동시에 해도 안전하다."""
+    st = _trace_db(monkeypatch)
+    run_sqltune(SLOW, compare_candidates=True, detail="full")
+    assert st["explain_peak"] > 1, "실행계획이 순차로 돌았다"
+
+
+def test_explain_can_be_forced_sequential(monkeypatch: Any):
+    st = _trace_db(monkeypatch)
+    run_sqltune(SLOW, compare_candidates=True, parallel_explain=False, detail="full")
+    assert st["explain_peak"] == 1
+
+
+def test_count_is_sequential_by_default(monkeypatch: Any):
+    """건수는 병렬로 해도 값은 같지만 순간 부하가 후보 수만큼 커진다."""
+    st = _trace_db(monkeypatch)
+    run_sqltune(SLOW, compare_candidates=True, compare_count=True, detail="full")
+    assert st["count_peak"] == 1
+
+
+def test_count_parallel_can_be_enabled(monkeypatch: Any):
+    st = _trace_db(monkeypatch)
+    r = run_sqltune(SLOW, compare_candidates=True, compare_count=True,
+                    parallel_count=True, detail="summary")
+    assert st["count_peak"] > 1
+    # 병렬로 셌다는 사실을 결과에 남긴다.
+    assert any("병렬로 셌다" in w for w in r["warnings"])
+
+
+def test_timing_is_never_parallel(monkeypatch: Any):
+    """수행시간은 어떤 설정에서도 동시에 재지 않는다.
+
+    동시에 돌리면 서로 자원을 뺏어 재려던 수치가 오염된다.
+    """
+    st = _trace_db(monkeypatch)
+    run_sqltune(SLOW, execute=True, compare_candidates=True, compare_count=True,
+                parallel_explain=True, parallel_count=True, detail="full")
+    assert st["run_peak"] == 1
+
+
+def test_timing_is_interleaved_by_default(monkeypatch: Any):
+    """A,B,A,B 순으로 돌아야 캐시 데우기 편향이 줄어든다."""
+    st = _trace_db(monkeypatch)
+    run_sqltune(SLOW, execute=True, compare_candidates=True, detail="full")
+    runs = [o.split(":")[1] for o in st["order"] if o.startswith("run:")]
+    # 3개 후보 × 2회 = 6회, 라운드마다 전원을 한 번씩
+    assert runs[:3] == ["원본", "A", "B"]
+    assert runs[3:6] == ["원본", "A", "B"]
+
+
+def test_interleave_can_be_turned_off(monkeypatch: Any):
+    """끄면 예전처럼 A,A,B,B 로 돈다. 그 편향을 경고로 남긴다."""
+    st = _trace_db(monkeypatch)
+    r = run_sqltune(SLOW, execute=True, compare_candidates=True,
+                    interleave=False, detail="summary")
+    runs = [o.split(":")[1] for o in st["order"] if o.startswith("run:")]
+    assert runs[:2] == ["원본", "원본"] and runs[2:4] == ["A", "A"]
+    assert any("교차 반복 없이" in w for w in r["warnings"])
+
+
+def test_rejected_candidate_is_not_timed(monkeypatch: Any):
+    """탈락한 후보에 시간을 쓰지 않는다."""
+    st = _trace_db(monkeypatch)
+    _fake_candidates(monkeypatch, [
+        {"name": "후보1", "sql": "DELETE FROM T", "reason": "?", "based_on": []},
+    ])
+    run_sqltune(SLOW, execute=True, compare_candidates=True, detail="full")
+    assert all(":A" not in o and ":B" not in o for o in st["order"])
+
+
+def test_baseline_is_not_timed_twice(monkeypatch: Any):
+    """비교할 때 원본을 두 번 재지 않는다.
+
+    run_check 와 compare 가 각각 재면 느린 원본을 한 번 더 돌리는 셈이고
+    교차 반복 순서도 흐트러진다.
+    """
+    st = _trace_db(monkeypatch)
+    run_sqltune(SLOW, execute=True, compare_candidates=True, detail="full")
+    runs = [o.split(":")[1] for o in st["order"] if o.startswith("run:")]
+    # 후보 3개(원본 포함) × 2회 = 6회. 그 이상이면 중복 측정이다.
+    assert len(runs) == 6, runs
+    assert runs.count("원본") == 2

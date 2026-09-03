@@ -309,6 +309,27 @@ SQLTUNE_COMPARE: bool = _env_bool("SQLTUNE_COMPARE", False)
 # 만들 후보 수 상한.
 SQLTUNE_CANDIDATES: int = _env_int("SQLTUNE_CANDIDATES", 2)
 
+# 실행계획(EXPLAIN)을 병렬로 받을 것인가.
+# EXPLAIN 은 파싱만 하고 행을 읽지 않아 부하가 거의 없다. 후보가 여럿이면
+# 왕복 횟수만큼 시간이 줄어든다. 켜 두는 것이 기본이다.
+SQLTUNE_PARALLEL_EXPLAIN: bool = _env_bool("SQLTUNE_PARALLEL_EXPLAIN", True)
+
+# 건수 세기(COUNT)를 병렬로 할 것인가.
+# 건수는 결정적인 값이라 경합이 있어도 결과가 바뀌지 않는다. 다만 무거운
+# 쿼리를 동시에 던지는 것이라 순간 부하가 후보 수만큼 커진다.
+# 시간은 줄지만 피크는 커진다 — 업무시간 운영 DB 에서는 끄고 쓸 것.
+SQLTUNE_PARALLEL_COUNT: bool = _env_bool("SQLTUNE_PARALLEL_COUNT", False)
+
+# 수행시간 측정을 교차 반복할 것인가 (A,B,A,B ...).
+# 끄면 A 를 연속으로 돌린 뒤 B 를 돌리는데, 그러면 B 가 A 가 데워 놓은
+# 캐시 덕을 봐서 뒤에 측정한 쪽이 유리해진다. 켜면 그 편향이 줄어든다.
+# 수행시간 측정 자체는 절대 병렬로 하지 않는다 — 서로 자원을 뺏어
+# 재려던 수치가 오염된다.
+SQLTUNE_INTERLEAVE_RUNS: bool = _env_bool("SQLTUNE_INTERLEAVE_RUNS", True)
+
+# 동시에 열 DB 세션 수 상한. 사내 DB 의 세션 제한을 넘지 않게 한다.
+SQLTUNE_PARALLEL_MAX: int = _env_int("SQLTUNE_PARALLEL_MAX", 4)
+
 # 결과 건수까지 비교할 것인가.
 # 건수 비교는 원본과 후보를 각각 COUNT(*) 로 감싸 '실행'해야 알 수 있다.
 # DB 는 원본만큼 일하므로 기본은 꺼 둔다. CLI 는 --count 로 켠다.
