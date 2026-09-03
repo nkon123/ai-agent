@@ -130,6 +130,8 @@ agents/
   echo/             구조 확인용 최소 샘플 — 새 에이전트의 템플릿
   usage/            식별자 사용처 찾기 — core/ 를 실제로 쓰는 샘플
   iferr/            인터페이스 오류 메일 → 키 추출 → DB 영향 확인
+  impact/           테이블 영향도 — 소스에서 SQL 문장을 잘라 읽기/쓰기 판정
+core/sqlstmt.py     완결된 SQL 문장 잘라내기·판정
 core/outlook.py     Outlook 메일 읽기 (COM / .eml). 읽기 전용
 samples/src/        usage 를 바로 돌려 볼 예제 소스 (함정 포함)
 samples/mail/       iferr 를 Outlook 없이 돌려 볼 예제 메일
@@ -154,6 +156,7 @@ tests/              core/ + MCP 회귀 테스트
 | 툴 | 등급 | 무엇 |
 |---|---|---|
 | `check_interface_errors` | combo | 오류 메일 → 키 → DB → 영향까지 한 번에 |
+| `analyze_table_impact` | combo | 테이블을 쓰는 SQL 문장 찾기 |
 | `find_usage` | combo | 소스에서 식별자 사용처 찾기 |
 | `echo_classify` | combo | 문장 분류 (샘플) |
 | `list_error_mails` | step | 메일만 (DB 안 붙음) |
@@ -181,6 +184,7 @@ tests/              core/ + MCP 회귀 테스트
 | `echo` | 문장을 질문/명령/평서로 분류 | 최소 구조. 새 에이전트는 여기서 복사해 시작한다 |
 | `usage` | 소스에서 식별자 사용처 찾기 | `core/` 를 실제로 쓰는 형태. 캐시 키 설계, 근거 남기기, '없다'와 '모른다' 구분 |
 | `iferr` | 인터페이스 오류 메일 → DB 영향 확인 | 외부 시스템(Outlook·Oracle) 연동. 실패를 '확인 불가'로 남기기, 개인정보 마스킹 |
+| `impact` | 테이블이 소스 어디서 읽히고 쓰이는지 | 문장 단위 판정, LLM 이 규칙을 뒤집지 않게 하기 |
 
 `usage` 를 돌려 보면 `core/text.py` 가 왜 그렇게 생겼는지 바로 보인다.
 

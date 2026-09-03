@@ -102,6 +102,23 @@ def check_interface_errors(period: str = "", key: str = "") -> str:
             )
         if r["more_cases"]:
             lines.append(f"- 외 {r['more_cases']}건")
+
+        # 다음 단계를 알려 준다. 소형 모델은 툴을 이어서 부르지 못하므로
+        # 사용자가 다음 질문을 할 수 있도록 대상 테이블을 짚어 준다.
+        targets = [
+            f["tar_table"]
+            for c in r["cases"]
+            for f in (c.get("flows") or [])
+            if f.get("tar_table")
+        ]
+        if targets:
+            uniq = sorted(set(targets))[:3]
+            lines.append(
+                "영향 조사: "
+                + ", ".join(uniq)
+                + " 이(가) 안 채워졌다. 이 테이블을 쓰는 프로그램은 "
+                "analyze_table_impact 로 확인할 수 있다"
+            )
         head = "\n".join(lines)
 
     if r.get("comment"):

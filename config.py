@@ -246,6 +246,10 @@ IFERR_STATUS_COLUMNS: tuple[str, ...] = tuple(
     ).split(",")
 )
 
+# LLM 으로 확인할 SQL 문장 수 상한. 로컬 모델은 문장 하나에 수 초가 걸려
+# 수십 건을 돌리면 챗봇이 멎은 것처럼 보인다.
+IMPACT_MAX_STATEMENTS: int = _env_int("IMPACT_MAX_STATEMENTS", 8)
+
 # 한 번에 조회할 최대 행 수. 로컬 LLM 이 붙은 요청 하나가 수만 행을
 # 끌어오면 챗봇이 통째로 멎는다.
 IFERR_MAX_ROWS: int = _env_int("IFERR_MAX_ROWS", 200)

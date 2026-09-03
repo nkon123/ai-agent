@@ -1,0 +1,19 @@
+/* 주문 연계 적재 (Pro*C) */
+#include <stdio.h>
+
+void load_order(void)
+{
+    /* IF_ORDER_TMP 에서 읽어 ORD_HDR 로 옮긴다 (주석 속 언급; 사용처 아님) */
+    EXEC SQL
+        SELECT ORD_NO, TOTAL_AMT
+          INTO :ord_no, :amt
+          FROM IF_ORDER_TMP
+         WHERE STATUS = 'N';
+
+    EXEC SQL
+        INSERT INTO ORD_HDR (ORD_NO, TOTAL_AMT)
+        VALUES (:ord_no, :amt);
+
+    EXEC SQL
+        DELETE FROM IF_ORDER_TMP WHERE ORD_NO = :ord_no;
+}
