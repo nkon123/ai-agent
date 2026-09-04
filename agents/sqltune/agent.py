@@ -844,6 +844,14 @@ def compare(state: TuneState) -> TuneState:
                 "데워 놓은 캐시 덕을 봤을 수 있다"
             )
 
+    # 측정에 실패한 것은 순위에서 빠진다. 그 사실을 조용히 넘기지 않는다 —
+    # 표에 '-' 만 찍히면 왜 빠졌는지 알 수 없다. LLM 이 만든 후보는 문법이
+    # 어긋나 EXPLAIN 부터 실패하는 일이 흔하다.
+    for entry in entries:
+        if entry.get("rejected") or not entry.get("errors"):
+            continue
+        warnings.append(f"{entry['name']} 측정 실패 — 확인 필요: {entry['errors'][0]}")
+
     ranked = [e for e in entries if not e.get("rejected") and not e.get("errors")]
     ranked.sort(key=_score)
     best = ranked[0]["name"] if ranked else ""
@@ -1077,7 +1085,11 @@ if __name__ == "__main__":
         print(f"  {'후보':<8}{'Cost':>8}{'건수':>10}{'시간(초)':>10}{'Buffers':>10}  비고")
         print("  " + "─" * 76)
         for c in comparison:
-            note = c.get("rejected") or c.get("reason", "")
+            note = (
+                c.get("rejected")
+                or (c.get("errors") or [""])[0]
+                or c.get("reason", "")
+            )
             elapsed = c.get("elapsed_sec")
             elapsed_s = f"{elapsed:.3f}" if elapsed is not None else "-"
             rows = c.get("rows")
@@ -1096,6 +1108,13 @@ if __name__ == "__main__":
                     # 후보의 계획도 보여 준다. 어느 접근 경로가 달라졌는지가
                     # Cost 숫자보다 중요하다.
                     print("  " + format_plan(c["plan"]).replace("\n", "\n  "))
+                elif c.get("errors"):
+                    # 계획이 없으면 왜 없는지 적는다. 빈칸으로 두면
+                    # '계획이 원래 안 나오나' 하고 오해한다.
+                    for err in c["errors"]:
+                        print(f"  [실행계획 없음] {err}")
+                else:
+                    print("  [실행계획 없음] DB 에 연결되지 않았다")
 
     for w in result.get("warnings", []):
         print(f"\n[확인 필요] {w}")

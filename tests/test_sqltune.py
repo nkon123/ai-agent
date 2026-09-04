@@ -771,3 +771,31 @@ def test_summary_omits_candidate_plans(monkeypatch: Any):
     s = run_sqltune(SLOW, compare_candidates=True, detail="summary")
     assert seen  # 조회는 돌았다
     assert all("plan" not in c for c in s["compared"])
+
+
+def test_candidate_measure_failure_is_reported(monkeypatch: Any):
+    """후보 측정이 실패하면 그 사유가 드러나야 한다.
+
+    LLM 이 만든 SQL 은 문법이 어긋나 EXPLAIN 부터 실패하는 일이 흔하다.
+    표에 '-' 만 찍히고 아무 말이 없으면 '계획이 원래 안 나오나' 로 오해한다.
+    """
+
+    def fake_explain(sql: str, timeout: Any = None):
+        if "cand_a" in sql:
+            raise RuntimeError("ORA-00936: missing expression")
+        return [{"ID": 0, "OPERATION": "SELECT STATEMENT", "COST": 840}]
+
+    monkeypatch.setattr(sqltune.oracle, "is_configured", lambda: True)
+    monkeypatch.setattr(sqltune.oracle, "existing_indexes", lambda t, schema=None: [])
+    monkeypatch.setattr(sqltune.oracle, "explain_plan", fake_explain)
+    _fake_candidates(monkeypatch, [
+        {"name": "후보1", "sql": "SELECT cand_a FROM T", "reason": "x", "based_on": []}
+    ])
+
+    r = run_sqltune(SLOW, compare_candidates=True, detail="full")
+    cand = [c for c in r["comparison"] if c["name"] == "후보1"][0]
+
+    assert not cand.get("plan") and cand["errors"]
+    assert any("후보1 측정 실패" in w and "ORA-00936" in w for w in r["warnings"])
+    # 측정 못 한 후보가 이기면 안 된다.
+    assert r["best"] == "원본"
