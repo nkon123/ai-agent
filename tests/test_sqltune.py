@@ -18,6 +18,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import config  # noqa: E402
 from agents.sqltune import agent as sqltune  # noqa: E402
 from agents.sqltune import is_safe_select, run_sqltune, suggest_index  # noqa: E402
 from core import oracle  # noqa: E402
@@ -640,3 +641,22 @@ def test_missing_binds_lists_only_the_absent_ones():
     assert sqltune.missing_binds(BOUND, {"if_key": "x"}) == ["d1"]
     assert sqltune.missing_binds(BOUND, {":if_key": "x", "d1": "y"}) == []
     assert sqltune.missing_binds("SELECT 1 FROM dual", None) == []
+
+
+def test_relevant_rules_trims_the_document():
+    """걸린 규칙만 보낸다. 문서 전체를 넣으면 컨텍스트를 넘긴다."""
+    doc = sqltune.load_rules(config.SQLTUNE_RULES_FILE)
+    trimmed = sqltune.relevant_rules(doc, ["func-on-column", "negation"])
+    assert len(trimmed) < len(doc)
+    assert "func-on-column" in trimmed and "negation" in trimmed
+    # 안 걸린 규칙은 빠진다.
+    assert "leading-wildcard" not in trimmed
+    # 제목은 남겨 문맥을 준다.
+    assert "# 오라클 튜닝 기준" in trimmed
+
+
+def test_relevant_rules_falls_back_when_names_unknown():
+    """규칙 이름을 바꾼 경우에도 빈 프롬프트를 보내지 않는다."""
+    doc = sqltune.load_rules(config.SQLTUNE_RULES_FILE)
+    assert len(sqltune.relevant_rules(doc, ["없는규칙"])) > 200
+    assert len(sqltune.relevant_rules(doc, [])) > 200

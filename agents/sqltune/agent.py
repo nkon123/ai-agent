@@ -104,6 +104,24 @@ def strip_trailing_semicolon(sql: str) -> str:
 # --------------------------------------------------------------------------
 
 
+def relevant_rules(rules_text: str, names: list[str]) -> str:
+    """기준 문서에서 이번에 걸린 규칙 부분만 추린다.
+
+    문서 전체를 넣으면 프롬프트가 커지고, 추론 모델은 사고 토큰까지 더해
+    컨텍스트를 넘긴다(본문이 비어 나온다). 걸린 규칙만 보내면 충분하다 —
+    LLM 은 우리가 찾은 문제를 고치는 역할이지 문서를 통독할 이유가 없다.
+    """
+    if not names:
+        return rules_text[:1500]
+    keep: list[str] = []
+    for line in rules_text.splitlines():
+        if line.startswith("#") or any(n in line for n in names):
+            keep.append(line)
+    text = "\n".join(keep)
+    # 걸린 규칙이 문서에 없으면(이름을 바꾼 경우) 앞부분이라도 준다.
+    return text if len(text) > 200 else rules_text[:1500]
+
+
 @cached(ttl=600, maxsize=2, key=lambda path: path)
 def load_rules(path: str) -> str:
     """기준 문서를 읽는다. LLM 프롬프트에 그대로 넣는다.
@@ -518,7 +536,7 @@ def propose(state: TuneState) -> TuneState:
     try:
         from pydantic import BaseModel, Field
 
-        from core.llm import get_structured_llm
+        from core.llm import invoke_structured
 
         class Candidate(BaseModel):
             sql: str = Field(description="고친 SELECT 쿼리 전문")
@@ -531,7 +549,11 @@ def propose(state: TuneState) -> TuneState:
             candidates: list[Candidate] = Field(description="개선 후보 목록")
 
         notify("튜닝 기준으로 개선 후보 만드는 중 (수십 초 걸린다)")
-        rules = load_rules(SQLTUNE_RULES_FILE)
+        # 걸린 규칙만 보낸다. 문서 전체(3KB+)를 넣으면 추론 토큰까지 더해
+        # 컨텍스트를 넘겨 본문이 비어서 나온다.
+        rules = relevant_rules(
+            load_rules(SQLTUNE_RULES_FILE), [f["rule"] for f in findings]
+        )
         issues = "\n".join(
             f"- {f['rule']}: {f['note']} (근거: {f['evidence']})" for f in findings
         ) or "- (규칙이 찾은 문제 없음)"
@@ -541,11 +563,16 @@ def propose(state: TuneState) -> TuneState:
             "**결과 건수와 결과 값이 달라지는 변경은 절대 하지 마라.** 건수가 달라지면\n"
             "튜닝이 아니라 버그다. SELECT 문만 만들어라.\n"
             f"후보는 최대 {SQLTUNE_CANDIDATES}개까지.\n\n"
-            f"[튜닝 기준]\n{rules[:6000]}\n\n"
+            f"[튜닝 기준]\n{rules[:3000]}\n\n"
             f"[규칙이 찾은 문제]\n{issues}\n\n"
             f"[원본 쿼리]\n{state['sql'][:3000]}\n"
         )
-        out = get_structured_llm(Candidates).invoke(prompt)
+        # 생성 과제라 사고 과정을 끈다. 켜 두면 사고에만 수백 초를 쓰고
+        # 본문이 비어 나오는 일이 잦다(실측 392초·534초 실패 → 20초 성공).
+        # 판정 과제인 impact 는 반대로 켜 둔다 — 거기서는 정확도가 크게 오른다.
+        out, note = invoke_structured(Candidates, prompt, reasoning=False)
+        if note:
+            warnings.append(note)
         cands: list[dict[str, Any]] = []
         for i, c in enumerate(out.candidates[:SQLTUNE_CANDIDATES], start=1):
             cands.append(

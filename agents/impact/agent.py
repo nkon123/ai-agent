@@ -194,14 +194,13 @@ def verify(state: ImpactState) -> ImpactState:
     try:
         from pydantic import BaseModel, Field
 
-        from core.llm import get_structured_llm
+        from core.llm import invoke_structured
 
         class Verdict(BaseModel):
             uses_table: bool = Field(description="이 SQL이 해당 테이블을 실제로 사용하는가")
             role: Literal["read", "write", "unknown"] = Field(description="읽기/쓰기")
             note: str = Field(description="한 문장 근거")
 
-        llm = get_structured_llm(Verdict)
         targets = statements[:IMPACT_MAX_STATEMENTS]
         for idx, s in enumerate(targets, start=1):
             # 판정 하나에 수십 초가 걸린다. 몇 번째인지 알려야 기다릴 수 있다.
@@ -213,7 +212,9 @@ def verify(state: ImpactState) -> ImpactState:
                 "읽기(SELECT/FROM/JOIN)인지 쓰기(INSERT/UPDATE/DELETE/MERGE)인지도 말해라.\n\n"
                 f"{s['sql'][:2000]}"
             )
-            v = llm.invoke(prompt)
+            v, note = invoke_structured(Verdict, prompt)
+            if note and note not in warnings:
+                warnings.append(note)
             s["llm"] = {"uses_table": v.uses_table, "role": v.role, "note": v.note}
             checked += 1
             # 규칙과 어긋나면 그대로 남긴다. 어느 쪽이 맞는지는 사람이 본다.

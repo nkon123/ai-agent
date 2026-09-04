@@ -127,6 +127,13 @@ JUDGE_MODEL: str = _env_str("JUDGE_MODEL", "gemma4:e2b")
 # VRAM 6GB 노트북 기준으로 8192 가 안전한 상한이다.
 NUM_CTX: int = _env_int("NUM_CTX", 8192)
 
+# 추론(thinking) 모델의 사고 과정을 켤 것인가. None 이면 모델 기본값.
+# 대화에는 도움이 되지만 토큰과 시간을 많이 쓴다. 구조화 출력에서는
+# 이 값과 무관하게 항상 끈다(아래 core/llm.py 참고).
+LLM_REASONING: bool | None = (
+    None if not _env_str("LLM_REASONING", "") else _env_bool("LLM_REASONING", True)
+)
+
 # False 면 LLM 없이 규칙만으로 동작한다. 폐쇄망/Ollama 미기동 상황에서도
 # 서버 기동과 CLI 실행이 가능해야 하므로 각 에이전트가 이 플래그를 존중한다.
 USE_LLM: bool = _env_bool("USE_LLM", True)

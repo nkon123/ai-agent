@@ -462,6 +462,7 @@ LLM 호출 실패나 판정 불가를 조용히 넘기지 말 것. "확인 필�
 | utf-8 로만 파일 읽기 | 사내 파일은 cp949 인 경우가 흔하다 |
 | Outlook COM 을 워커 스레드에서 `CoInitialize()` 없이 호출 | Flask/MCP 브리지는 별도 스레드다. 원인 알기 어려운 에러가 난다 |
 | Outlook `Items` 를 `Restrict` 없이 전체 순회 | 메일 한 통마다 COM 왕복이 일어나 수만 통에서 몇 분씩 걸린다 |
+| 추론 모델에 큰 프롬프트로 구조화 출력 요구 | 사고에 토큰을 다 써서 본문이 빈 채로 온다 (`Invalid json output`). 생성 과제는 `reasoning=False`, 판정 과제는 켠 채로 |
 | 문자열 리터럴을 그대로 두고 검색 | `'TOTAL_AMT is not a hit'` 이 사용처로 잡힌다. 사용처 검색에는 `strip_comments(..., mask_strings=True)` |
 | BOM 방치 | utf-8 디코드는 성공하면서 맨 앞에 U+FEFF 를 남긴다 |
 | `num_ctx` 미지정 | 기본 2048 이 프롬프트를 조용히 자른다 |

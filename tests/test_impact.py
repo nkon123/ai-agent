@@ -180,13 +180,12 @@ def test_llm_conflict_is_reported(monkeypatch: Any):
         role = "unknown"
         note = "주석으로 보인다"
 
-    class FakeLLM:
-        def invoke(self, prompt: str) -> Any:
-            return FakeVerdict()
-
     monkeypatch.setattr(impact, "USE_LLM", True)
+    # invoke_structured 는 (결과, 경고문) 을 돌려준다.
     monkeypatch.setitem(sys.modules, "core.llm", type(sys)("core.llm"))
-    sys.modules["core.llm"].get_structured_llm = lambda schema: FakeLLM()
+    sys.modules["core.llm"].invoke_structured = (
+        lambda schema, prompt, model=None: (FakeVerdict(), "")
+    )
 
     state = {
         "table": "IF_ORDER_TMP",
@@ -315,3 +314,29 @@ def test_classify_ignores_case():
     assert classify("delete from If_Order_Tmp where a=1;", "IF_ORDER_TMP").role == "write"
     assert classify("select * from IF_ORDER_TMP;", "if_order_tmp").role == "read"
     assert classify("exec p(if_order_tmp_id);", "IF_ORDER_TMP_ID").rule == "name-only"
+
+
+def test_structured_retry_note_is_kept(monkeypatch: Any):
+    """사고를 끄고 다시 받았으면 그 사실이 결과에 남아야 한다.
+
+    두 번째 시도의 답은 첫 시도와 품질이 다를 수 있다.
+    """
+
+    class FakeVerdict:
+        uses_table = True
+        role = "read"
+        note = "읽는다"
+
+    monkeypatch.setattr(impact, "USE_LLM", True)
+    monkeypatch.setitem(sys.modules, "core.llm", type(sys)("core.llm"))
+    sys.modules["core.llm"].invoke_structured = (
+        lambda schema, prompt, model=None: (FakeVerdict(), "사고 과정을 껐다")
+    )
+
+    out = impact.verify({
+        "table": "T",
+        "statements": [{"file": "a.c", "start_line": 1, "role": "read",
+                        "sql": "SELECT 1", "decided_by": "rule"}],
+        "warnings": [],
+    })
+    assert any("사고 과정을 껐다" in w for w in out["warnings"])
