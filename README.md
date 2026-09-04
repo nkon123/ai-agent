@@ -251,6 +251,24 @@ order_pkg.sql : 5 | UPDATE ORDERS SET ...    ← SQL
   [ 153s] 완료 → IF_ORDER_TMP 테이블은 …
 ```
 
+답이 나오면 진행 줄은 사라지지 않고 **답변 아래에 접혀서** 남는다.
+
+```
+IF_ORDER_TMP 테이블은 소스에서 다음과 같이 쓰이고 있습니다: …
+사용한 툴: analyze_table_impact
+
+▸ 과정 보기 (6단계 · 153초)          ← 클릭하면 펼쳐진다
+     0s  생각 중…
+     5s  테이블 영향도 조사 (impact) 실행 중…
+     6s  SQL 문장 판정 중 1/3 (OrderLoader.java:6)
+    36s  SQL 문장 판정 중 2/3 (OrderLoader.java:9)
+   134s  테이블 영향도 조사 (impact) 완료
+   134s  결과 정리 중…
+```
+
+결과만 남으면 "무엇을 보고 그렇게 판단했는지" 를 되짚을 수 없다.
+대화 목록에 함께 저장되므로 나중에 그 대화를 다시 열어도 남아 있다.
+
 `POST /api/chat/stream` 이 Server-Sent Events 로 흘려보낸다
 (`status` / `tool_start` / `progress` / `tool_end` / `done` / `error`).
 `POST /api/chat` 도 그대로 남아 있다 — 진행 없이 최종 답만 받는다.
