@@ -273,7 +273,9 @@ IFERR_STATUS_COLUMNS: tuple[str, ...] = tuple(
 
 # LLM 으로 확인할 SQL 문장 수 상한. 로컬 모델은 문장 하나에 수 초가 걸려
 # 수십 건을 돌리면 챗봇이 멎은 것처럼 보인다.
-IMPACT_MAX_STATEMENTS: int = _env_int("IMPACT_MAX_STATEMENTS", 8)
+# 로컬 4B 모델 기준 판정 하나에 30~40초다. 8건이면 한 번 조사에 5분이라
+# 툴 타임아웃을 넘긴다. 규칙 기반 판정은 전부 하고 LLM 재확인만 줄인다.
+IMPACT_MAX_STATEMENTS: int = _env_int("IMPACT_MAX_STATEMENTS", 3)
 
 # 한 번에 조회할 최대 행 수. 로컬 LLM 이 붙은 요청 하나가 수만 행을
 # 끌어오면 챗봇이 통째로 멎는다.
@@ -370,9 +372,11 @@ CHAT_TOOL_TIERS: tuple[str, ...] = tuple(
     t.strip() for t in _env_str("CHAT_TOOL_TIERS", "combo").split(",") if t.strip()
 )
 
-# 툴 한 번 호출의 상한. 로컬 LLM 이 물고 늘어질 때 요청 스레드가
-# 무한정 잡히는 것을 막는다.
-MCP_TOOL_TIMEOUT_SEC: int = _env_int("MCP_TOOL_TIMEOUT_SEC", 120)
+# 툴 한 번 호출의 상한.
+# 로컬 모델은 판정 하나에 30~40초가 걸린다. 문장 몇 건만 확인해도 2분을
+# 넘기므로 120초로는 늘 시간 초과가 났다. 진행 상황이 화면에 보이게 된
+# 뒤로는 오래 걸리는 것과 멈춘 것을 구분할 수 있으니 넉넉히 잡는다.
+MCP_TOOL_TIMEOUT_SEC: int = _env_int("MCP_TOOL_TIMEOUT_SEC", 300)
 
 # MRTR(Multi Round-Trip Request) 최대 왕복 횟수.
 # 서버가 resultType="input_required" 로 되물으면 클라이언트가 답을 채워

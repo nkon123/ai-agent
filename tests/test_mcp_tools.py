@@ -281,3 +281,54 @@ def test_example_key_follows_configured_prefix() -> None:
 
     assert sample_key(("ZZZIF",)) == "ZZZIF0001234"
     assert sample_key(()) == "인터페이스ID"
+
+
+def test_progress_reaches_the_client() -> None:
+    """툴 안에서 보낸 진행 상황이 클라이언트까지 와야 한다.
+
+    로컬 모델은 한 번 답하는 데 몇 분이 걸린다. 그동안 화면이 비어 있으면
+    멈춘 것과 구분되지 않는다.
+    """
+    seen: list[str] = []
+
+    async def on_progress(progress: float, total: Any, message: Any) -> None:
+        seen.append(str(message))
+
+    async def call(c: Client) -> Any:
+        return await c.call_tool(
+            "check_interface_errors", {"period": "오늘"}, progress_callback=on_progress
+        )
+
+    _run(_with_client(call))
+    assert seen, "진행 알림이 오지 않았다"
+    assert any("메일" in m for m in seen)
+
+
+def test_agent_progress_is_relayed_through_mcp() -> None:
+    """에이전트 안(core.progress.notify)의 진행도 MCP 알림으로 나가야 한다.
+
+    에이전트는 MCP 서버 프로세스에서 돈다. 앱 프로세스의 contextvar 로는
+    닿지 않으므로 툴 껍데기가 중계해야 한다.
+    """
+    seen: list[str] = []
+
+    async def on_progress(progress: float, total: Any, message: Any) -> None:
+        seen.append(str(message))
+
+    async def call(c: Client) -> Any:
+        return await c.call_tool(
+            "analyze_table_impact",
+            {"table": "IF_ORDER_TMP", "root": "SAMPLE"},
+            progress_callback=on_progress,
+        )
+
+    _run(_with_client(call))
+    assert any("찾는 중" in m for m in seen), seen
+
+
+def test_notify_without_listener_is_harmless() -> None:
+    """CLI 나 테스트에서는 듣는 곳이 없다. 그래도 작업은 돌아야 한다."""
+    from core.progress import current_sink, notify
+
+    assert current_sink() is None
+    notify("아무도 안 듣는 진행")      # 예외가 나면 안 된다

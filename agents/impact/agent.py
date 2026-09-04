@@ -31,6 +31,7 @@ from langgraph.graph import END, START, StateGraph  # noqa: E402
 from agents.usage.agent import LANG_BY_SUFFIX, scan_files  # noqa: E402
 from config import IMPACT_MAX_STATEMENTS, SOURCE_ROOTS, USE_LLM  # noqa: E402
 from core.cache import cached  # noqa: E402
+from core.progress import notify  # noqa: E402
 from core.sqlstmt import classify, masks_strings, statement_at  # noqa: E402
 from core.text import ident_pattern, read_text_with_encoding, strip_comments  # noqa: E402
 
@@ -91,6 +92,7 @@ def collect(state: ImpactState) -> ImpactState:
             "warnings": ["테이블 이름이 비어 있다 — 확인 필요"],
         }
 
+    notify(f"{state['root_label']} 소스에서 {table} 찾는 중")
     files = scan_files(state["root_path"])
     pattern = ident_pattern(table)
     statements: list[dict[str, Any]] = []
@@ -180,6 +182,7 @@ def verify(state: ImpactState) -> ImpactState:
     statements = state.get("statements") or []
     if not USE_LLM or not statements:
         return {}
+    notify(f"문장 {min(len(statements), IMPACT_MAX_STATEMENTS)}건 LLM 확인 시작")
 
     warnings = list(state.get("warnings") or [])
     table = state.get("table", "")
@@ -195,7 +198,11 @@ def verify(state: ImpactState) -> ImpactState:
             note: str = Field(description="한 문장 근거")
 
         llm = get_structured_llm(Verdict)
-        for s in statements[:IMPACT_MAX_STATEMENTS]:
+        targets = statements[:IMPACT_MAX_STATEMENTS]
+        for idx, s in enumerate(targets, start=1):
+            # 판정 하나에 수십 초가 걸린다. 몇 번째인지 알려야 기다릴 수 있다.
+            notify(f"SQL 문장 판정 중 {idx}/{len(targets)} "
+                    f"({Path(s['file']).name}:{s.get('start_line')})")
             prompt = (
                 f"아래 SQL 문장이 테이블 '{table}' 을 실제로 사용하는지 판단해라.\n"
                 "주석이나 다른 테이블 이름에 스쳐 나온 것이면 사용이 아니다.\n"

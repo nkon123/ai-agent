@@ -36,10 +36,14 @@ sys.path[:] = [p for p in sys.path if Path(p or ".").resolve() != _HERE]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+import asyncio  # noqa: E402
+import json  # noqa: E402
+import queue  # noqa: E402
+
 from flask import Flask, jsonify, render_template, request  # noqa: E402
 
 import config  # noqa: E402
-from app.mcp_bridge import BRIDGE, fill_uri  # noqa: E402
+from app.mcp_bridge import BRIDGE, PROGRESS_SINK, fill_uri  # noqa: E402
 
 BASE_SYSTEM_PROMPT = """너는 사내 개발자를 돕는 한국어 어시스턴트다.
 
@@ -168,6 +172,98 @@ def api_resource():
         return jsonify({"error": msg}), 502
 
 
+@app.post("/api/chat/stream")
+def api_chat_stream():
+    """진행 상황을 흘려보내며 답한다 (Server-Sent Events).
+
+    로컬 모델은 한 번 답하는 데 수십 초에서 몇 분이 걸린다. 그동안 화면에
+    아무것도 안 나오면 멈춘 것과 구분이 되지 않는다. 무엇을 하고 있는지
+    (툴 실행 중인지, 메일을 읽는 중인지, 판정 중인지) 계속 내보낸다.
+
+    이벤트 종류:
+        status      단계 표시 ("생각 중…", "답변 정리 중…")
+        tool_start  툴 실행 시작
+        progress    툴 내부 진행 (MCP 진행 알림에서 온다)
+        tool_end    툴 실행 끝
+        done        최종 답변
+        error       실패
+    """
+    data = request.get_json(silent=True) or {}
+    message = (data.get("message") or "").strip()
+    thread_id = data.get("thread_id") or "default"
+    if not message:
+        return jsonify({"error": "message 가 비어 있다"}), 400
+
+    # 브리지 루프(비동기)에서 만든 이벤트를 Flask 응답 스레드(동기)로
+    # 넘기는 통로. 스레드 안전한 queue 를 쓴다.
+    events: queue.Queue = queue.Queue()
+    DONE = object()
+
+    def sink(evt: dict[str, Any]) -> None:
+        events.put(evt)
+
+    async def drive() -> None:
+        # 이 요청의 진행 상황 수신처를 지정한다. 툴 코루틴이 여기로 보낸다.
+        PROGRESS_SINK.set(sink)
+        agent = get_agent()
+        reply = ""
+        seen_tools: list[dict[str, Any]] = []
+        try:
+            sink({"type": "status", "text": "생각 중…"})
+            async for ev in agent.astream_events(
+                {"messages": [{"role": "user", "content": message}]},
+                config={"configurable": {"thread_id": thread_id}},
+                version="v2",
+            ):
+                kind = ev.get("event")
+                if kind == "on_tool_start":
+                    seen_tools.append(
+                        {"name": ev.get("name", ""), "args": (ev.get("data") or {}).get("input", {})}
+                    )
+                elif kind == "on_chat_model_start" and seen_tools:
+                    # 툴을 부른 뒤 다시 모델로 돌아왔다 = 결과를 읽는 중이다.
+                    sink({"type": "status", "text": "결과 정리 중…"})
+                elif kind == "on_chain_end" and ev.get("name") == "LangGraph":
+                    out = (ev.get("data") or {}).get("output") or {}
+                    for m in reversed(out.get("messages", []) or []):
+                        if getattr(m, "type", "") == "ai" and getattr(m, "content", ""):
+                            reply = m.content
+                            break
+            sink({
+                "type": "done",
+                "reply": reply,
+                "tool_calls": seen_tools,
+                "needs_confirmation": _take_pending(),
+            })
+        except Exception as e:
+            # 실패를 감추지 않는다. 화면에 그대로 보여준다.
+            sink({"type": "error", "text": f"{type(e).__name__}: {e}"})
+        finally:
+            events.put(DONE)
+
+    BRIDGE.submit(drive())
+
+    def stream():
+        while True:
+            evt = events.get()
+            if evt is DONE:
+                break
+            yield f"data: {json.dumps(evt, ensure_ascii=False, default=str)}\n\n"
+
+    return app.response_class(
+        stream(),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def _take_pending() -> list[dict[str, Any]]:
+    """서버가 사람 확인을 요구해 거절한 건을 꺼내 비운다."""
+    pending = BRIDGE.pending_confirmations[:]
+    BRIDGE.pending_confirmations.clear()
+    return pending
+
+
 @app.post("/api/chat")
 def api_chat():
     data = request.get_json(silent=True) or {}
@@ -197,8 +293,7 @@ def api_chat():
             break
 
     # 서버가 사람 확인을 요구해 거절한 건이 있으면 결과에 실어 보낸다.
-    pending = BRIDGE.pending_confirmations[:]
-    BRIDGE.pending_confirmations.clear()
+    pending = _take_pending()
 
     return jsonify(
         {

@@ -24,6 +24,7 @@ langchain-mcp-adapters 를 쓰지 않는 이유:
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import os
 import sys
@@ -65,6 +66,26 @@ def _server_spec() -> Any:
     return config.MCP_SERVER_URL
 
 
+# 지금 처리 중인 요청의 진행 상황 수신처.
+# 툴 코루틴은 여러 요청이 공유하므로, 어느 요청의 진행인지 인자로 넘길 수가
+# 없다. contextvar 는 요청마다 값이 따로 잡히고 await 를 건너 전파되므로
+# "지금 이 요청" 을 그대로 따라간다.
+PROGRESS_SINK: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "mcp_progress_sink", default=None
+)
+
+
+def emit_progress(kind: str, text: str, **extra: Any) -> None:
+    """진행 상황을 현재 요청의 수신처로 보낸다. 수신처가 없으면 조용히 버린다.
+
+    조용히 버리는 것이 맞는 경우다 — CLI 나 테스트에서는 받을 곳이 없고,
+    진행 표시가 없다고 작업이 실패해서는 안 된다.
+    """
+    sink = PROGRESS_SINK.get()
+    if sink is not None:
+        sink({"type": kind, "text": text, **extra})
+
+
 class MCPBridge:
     """MCP 서버 하나에 붙어 있는 클라이언트. 프로세스당 하나면 충분하다."""
 
@@ -92,6 +113,15 @@ class MCPBridge:
             )
             self._thread.start()
         asyncio.run_coroutine_threadsafe(self._connect(), self._loop).result(timeout)
+
+    def submit(self, coro: Any) -> Any:
+        """코루틴을 브리지 루프에 던져 두고 기다리지 않는다.
+
+        스트리밍 응답용이다. 결과는 코루틴이 큐로 흘려보낸다.
+        """
+        if self._loop is None:
+            raise RuntimeError("BRIDGE.start() 를 먼저 호출할 것")
+        return asyncio.run_coroutine_threadsafe(coro, self._loop)
 
     def run(self, coro: Any, timeout: float | None = None) -> Any:
         """브리지 루프에서 코루틴을 돌리고 결과를 기다린다(동기 호출용)."""
@@ -194,11 +224,48 @@ class MCPBridge:
         name = mcp_tool.name
         client = self._client
 
+        label = _spec_of(mcp_tool)["label"]
+
         async def _call(**kwargs: Any) -> str:
             assert client is not None
-            result = await client.call_tool(
-                name, kwargs, read_timeout_seconds=config.MCP_TOOL_TIMEOUT_SEC
-            )
+            # 수신처를 '지금' 붙잡아 클로저로 넘긴다.
+            # 진행 콜백은 MCP 세션의 수신 태스크에서 불리는데, 그 태스크는
+            # 세션을 열 때 만들어져서 이 요청의 contextvar 를 보지 못한다.
+            # 콜백 안에서 PROGRESS_SINK.get() 을 하면 항상 None 이 나온다.
+            sink = PROGRESS_SINK.get()
+
+            async def on_progress(
+                progress: float, total: float | None, message: str | None
+            ) -> None:
+                """MCP 서버가 보낸 진행 알림을 화면 쪽으로 넘긴다."""
+                if sink is None:
+                    return
+                text = message or f"{label} 진행 중"
+                if total:
+                    text = f"{text} ({int(progress)}/{int(total)})"
+                sink({"type": "progress", "text": text, "tool": name})
+
+            emit_progress("tool_start", f"{label} 실행 중…", tool=name, args=kwargs)
+            try:
+                result = await client.call_tool(
+                    name,
+                    kwargs,
+                    read_timeout_seconds=config.MCP_TOOL_TIMEOUT_SEC,
+                    progress_callback=on_progress,
+                )
+            except Exception as e:
+                # 시간 초과는 원인이 대개 정해져 있다. 그대로 던지면
+                # 'timed out' 한 줄뿐이라 무엇을 줄여야 할지 알 수 없다.
+                hint = ""
+                if "timed out" in str(e).lower():
+                    hint = (
+                        f" (상한 {config.MCP_TOOL_TIMEOUT_SEC}초. 로컬 모델은 판정 "
+                        "하나에 수십 초가 걸린다 — IMPACT_MAX_STATEMENTS 를 줄이거나 "
+                        "MCP_TOOL_TIMEOUT_SEC 를 늘릴 것)"
+                    )
+                emit_progress("tool_end", f"{label} 실패", tool=name)
+                raise ToolException(f"[{name}] 툴 실행 실패: {e}{hint}") from e
+            emit_progress("tool_end", f"{label} 완료", tool=name)
             text = "\n".join(
                 getattr(c, "text", "") for c in result.content if getattr(c, "text", "")
             )

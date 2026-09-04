@@ -48,6 +48,7 @@ from config import (  # noqa: E402
 )
 from core import oracle  # noqa: E402
 from core.cache import cached  # noqa: E402
+from core.progress import notify  # noqa: E402
 from core.text import read_text, strip_comments  # noqa: E402
 
 Detail = Literal["full", "summary", "minimal"]
@@ -394,6 +395,7 @@ def static_check(state: TuneState) -> TuneState:
     """DB 없이 본문만 보고 잡는다. 접속이 안 돼도 여기까지는 항상 된다."""
     if not state.get("safe"):
         return {}
+    notify("쿼리 정적 진단 중")
     return {"findings": check_text_rules(state["sql"])}
 
 
@@ -407,6 +409,7 @@ def plan_check(state: TuneState) -> TuneState:
         warnings.append("Oracle 설정이 비어 있어 실행계획을 못 봤다 — 확인 필요")
         return {"plan": [], "warnings": warnings}
 
+    notify("실행계획 확인 중")
     sql = strip_trailing_semicolon(state["sql"])
     try:
         plan = oracle.explain_plan(sql)
@@ -509,6 +512,7 @@ def propose(state: TuneState) -> TuneState:
         class Candidates(BaseModel):
             candidates: list[Candidate] = Field(description="개선 후보 목록")
 
+        notify("튜닝 기준으로 개선 후보 만드는 중 (수십 초 걸린다)")
         rules = load_rules(SQLTUNE_RULES_FILE)
         issues = "\n".join(
             f"- {f['rule']}: {f['note']} (근거: {f['evidence']})" for f in findings
@@ -696,6 +700,7 @@ def compare(state: TuneState) -> TuneState:
     live = [e for e in entries if not e.get("rejected")]
 
     # ---- 1단계: 실행계획 -------------------------------------------------
+    notify(f"후보 {len(live)}개 실행계획 비교 중")
     for entry, got in zip(
         live, _run_maybe_parallel(_measure_plan, [e["sql"] for e in live], par_explain)
     ):
@@ -704,6 +709,7 @@ def compare(state: TuneState) -> TuneState:
 
     # ---- 2단계: 건수 -----------------------------------------------------
     if want_count:
+        notify(f"결과 건수 확인 중 ({len(live)}개)")
         for entry, got in zip(
             live,
             _run_maybe_parallel(_measure_count, [e["sql"] for e in live], par_count),
@@ -732,6 +738,7 @@ def compare(state: TuneState) -> TuneState:
 
     # ---- 3단계: 수행시간 -------------------------------------------------
     if want_run:
+        notify(f"수행시간 측정 중 ({len(live)}개 × {SQLTUNE_RUNS}회, 교차 반복)")
         _time_entries([e for e in live if not e.get("rejected")], interleave)
         if not interleave and len(live) > 1:
             warnings.append(

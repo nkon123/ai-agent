@@ -45,8 +45,10 @@ MCP 스펙 리비전 2026-07-28 기준. 툴 하나를 추가할 때 서버 코�
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import pkgutil
+import queue
 from typing import Any, Callable, TypeVar
 
 from mcp.server.mcpserver import MCPServer
@@ -150,6 +152,60 @@ def register(
         )(fn)
 
     return deco
+
+
+async def report_while(ctx: Any, fn: Callable[[], Any]) -> Any:
+    """sync 에이전트 함수를 돌리면서 그 진행 상황을 MCP 알림으로 중계한다.
+
+        return await report_while(ctx, lambda: run_impact(table, root=root))
+
+    왜 이런 모양인가:
+        에이전트는 sync 함수이고 (LangGraph 흐름, DB 조회) 수십 초씩 걸린다.
+        그대로 await 없이 부르면 MCP 서버의 이벤트 루프가 그동안 멈춰서
+        진행 알림을 보낼 수가 없다. 그래서 워커 스레드로 넘기고, 그 사이
+        루프는 큐를 비우며 알림을 보낸다.
+
+        큐는 thread-safe 한 queue.Queue 를 쓴다. 에이전트는 워커 스레드에서
+        돌고 알림은 루프 스레드에서 나가므로 asyncio.Queue 는 쓸 수 없다.
+        contextvar 는 asyncio.to_thread 가 복사해 주므로 워커 안에서도
+        core.progress.notify 가 같은 큐를 찾는다.
+    """
+    from core.progress import listening
+
+    q: "queue.Queue[str]" = queue.Queue()
+
+    def work() -> Any:
+        with listening(q.put):
+            return fn()
+
+    task = asyncio.create_task(asyncio.to_thread(work))
+    sent = 0
+    while True:
+        try:
+            # 큐를 비운다. 남은 것이 여러 개면 마지막 것만 보낸다 —
+            # 화면에 필요한 것은 '지금 무엇을 하는가'이지 이력이 아니다.
+            latest = None
+            while True:
+                latest = q.get_nowait()
+        except queue.Empty:
+            pass
+        if latest and ctx is not None:
+            sent += 1
+            await ctx.report_progress(sent, None, latest)
+        if task.done():
+            break
+        await asyncio.sleep(0.2)
+
+    # 끝난 뒤 큐에 남은 마지막 메시지도 보낸다.
+    try:
+        while True:
+            last = q.get_nowait()
+            if ctx is not None:
+                sent += 1
+                await ctx.report_progress(sent, None, last)
+    except queue.Empty:
+        pass
+    return await task
 
 
 def load_all() -> list[str]:

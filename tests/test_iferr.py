@@ -33,7 +33,10 @@ def eml_backend(monkeypatch: Any) -> None:
     """모든 테스트는 파일 백엔드로 돈다. Outlook 이 없어도 통과해야 한다."""
     monkeypatch.setattr(outlook, "MAIL_BACKEND", "eml")
     monkeypatch.setattr(outlook, "MAIL_EML_DIR", "./samples/mail")
-    monkeypatch.setattr(outlook, "MAIL_LOOKBACK_HOURS", 24)
+    # 샘플 메일은 파일에 박힌 날짜를 쓴다. 조회 범위를 24시간으로 두면
+    # 하루만 지나도 샘플이 범위 밖으로 밀려 테스트가 깨진다.
+    # 기간 해석 자체는 parse_period 로 따로 검증하므로 여기서는 넉넉히 잡는다.
+    monkeypatch.setattr(outlook, "MAIL_LOOKBACK_HOURS", 24 * 3650)
     iferr._query_cached.cache.clear()
 
 

@@ -24,6 +24,8 @@ import json
 
 from config import IFERR_KEY_PREFIXES
 
+from mcp.server.mcpserver import Context
+
 from config import MAIL_LOOKBACK_HOURS
 
 from agents.iferr import extract_keys, list_mails, lookup_key, run_iferr
@@ -65,7 +67,7 @@ _SAMPLE_KEY = sample_key(IFERR_KEY_PREFIXES)
     read_only=True,
     tier="combo",
 )
-def check_interface_errors(period: str = "", key: str = "") -> str:
+async def check_interface_errors(period: str = "", key: str = "", ctx: Context = None) -> str:
     """인터페이스 오류 메일을 읽고 키별로 DB 영향을 확인한다.
 
     타 시스템 연계에서 오류가 났을 때 어떤 인터페이스가 실패했고
@@ -79,8 +81,20 @@ def check_interface_errors(period: str = "", key: str = "") -> str:
     # 실제로 그래서 3일치가 아니라 3시간치만 보고 '없다'고 답했다.
     hours, label, warn = parse_period(period, MAIL_LOOKBACK_HOURS)
 
+    # 단계마다 무엇을 하는지 알린다. 메일이 수백 통이면 몇십 초가 걸리는데
+    # 그동안 화면이 비어 있으면 멈춘 것과 구분되지 않는다.
+    if ctx:
+        await ctx.report_progress(
+            1, 3, f"메일 확인 중 ({label})" if not key else f"{key} 조회 중"
+        )
+
     # summary 인 이유: 조회 행까지 돌려주면 매 턴 컨텍스트를 먹는다.
     r = run_iferr(hours=hours, key=key, detail="summary")
+
+    if ctx:
+        await ctx.report_progress(
+            2, 3, f"인터페이스 {r['case_count']}건 확인 — DB 조회 결과 정리 중"
+        )
 
     if not r["cases"]:
         head = (

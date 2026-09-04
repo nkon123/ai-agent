@@ -133,6 +133,7 @@ agents/
   impact/           테이블 영향도 — 소스에서 SQL 문장을 잘라 읽기/쓰기 판정
   sqltune/          SQL 튜닝 진단 — 기준 문서 기반 규칙 + 실행계획 + 인덱스 제안
 core/sqlstmt.py     완결된 SQL 문장 잘라내기·판정
+core/progress.py    에이전트 진행 상황 통로 (듣는 곳 없으면 조용히 버림)
 core/outlook.py     Outlook 메일 읽기 (COM / .eml). 읽기 전용
 samples/src/        usage 를 바로 돌려 볼 예제 소스 (함정 포함)
 samples/mail/       iferr 를 Outlook 없이 돌려 볼 예제 메일
@@ -208,6 +209,49 @@ order_pkg.sql : 5 | UPDATE ORDERS SET ...    ← SQL
 주석 속 `TOTAL_AMT`, 문자열 속 `"/* TOTAL_AMT */"`, `IF_A` 의 `A` 는
 **잡히지 않는다**. 세 가지 다 실제로 오탐이 났던 형태다
 (`samples/README.md` 에 무엇을 심어 뒀는지 적어 두었다).
+
+## 진행 상황 표시
+
+로컬 모델은 한 번 답하는 데 수십 초에서 몇 분이 걸린다. 그동안 화면이
+비어 있으면 **멈춘 것과 구분되지 않는다.** 그래서 무엇을 하는 중인지
+계속 내보낸다.
+
+```
+  [   0s] 생각 중…
+  [   5s] 테이블 영향도 조사 (impact) 실행 중…
+  [   6s] SQL 문장 판정 중 1/3 (OrderLoader.java:6)
+  [  36s] SQL 문장 판정 중 2/3 (OrderLoader.java:9)
+  [  82s] SQL 문장 판정 중 3/3 (ord_batch.prc:4)
+  [ 134s] 테이블 영향도 조사 (impact) 완료
+  [ 134s] 결과 정리 중…
+  [ 153s] 완료 → IF_ORDER_TMP 테이블은 …
+```
+
+`POST /api/chat/stream` 이 Server-Sent Events 로 흘려보낸다
+(`status` / `tool_start` / `progress` / `tool_end` / `done` / `error`).
+`POST /api/chat` 도 그대로 남아 있다 — 진행 없이 최종 답만 받는다.
+
+### 진행 상황이 흘러오는 경로
+
+에이전트는 **MCP 서버 프로세스**에서 돈다. 앱 프로세스의 변수로는 닿지
+않으므로 MCP 진행 알림(`notifications/progress`)을 타고 온다.
+
+```
+agents/…/agent.py        core.progress.notify("문장 판정 중 2/3")
+      ↓ (contextvar, 워커 스레드까지 복사됨)
+mcp_server/tools/…       report_while() 이 큐를 비우며 ctx.report_progress()
+      ↓ MCP 진행 알림
+app/mcp_bridge.py        progress_callback → 요청별 수신처
+      ↓ SSE
+브라우저                  진행 줄 갱신
+```
+
+새 에이전트에서 진행을 알리려면 `core.progress.notify("...")` 한 줄이면
+된다. 듣는 곳이 없으면(CLI·테스트) 조용히 버려진다 — 진행 표시가 없다고
+작업이 실패해서는 안 된다.
+
+오래 걸리는 sync 작업은 툴 껍데기에서 `report_while(ctx, lambda: run_xxx(...))`
+로 감싼다. 그러지 않으면 작업이 이벤트 루프를 붙들어 알림이 나가지 못한다.
 
 ## 새 에이전트 추가하기
 

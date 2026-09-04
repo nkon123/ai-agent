@@ -10,9 +10,11 @@
 
 from __future__ import annotations
 
+from mcp.server.mcpserver import Context
+
 from agents.sqltune import run_sqltune
 
-from . import register
+from . import register, report_while
 
 
 @register(
@@ -32,7 +34,7 @@ from . import register
     read_only=True,
     tier="combo",
 )
-def tune_query(sql: str) -> str:
+async def tune_query(sql: str, ctx: Context = None) -> str:
     """느린 SQL 을 오라클 튜닝 기준으로 진단하고 인덱스를 제안한다.
 
     쿼리를 실행하지 않고 실행계획만 본다. 조회(SELECT)만 받는다.
@@ -40,7 +42,9 @@ def tune_query(sql: str) -> str:
     """
     # execute=False 를 명시한다. 설정이 켜져 있어도 챗봇에서는 실행하지 않는다
     # — 모델이 무심코 부를 수 있고, 실행은 운영 DB 부하다.
-    r = run_sqltune(sql, execute=False, detail="summary")
+    r = await report_while(
+        ctx, lambda: run_sqltune(sql, execute=False, detail="summary")
+    )
 
     if not r["safe"]:
         return "진단하지 않았다: " + "; ".join(r["warnings"])

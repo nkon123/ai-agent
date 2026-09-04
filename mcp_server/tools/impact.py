@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 
+from mcp.server.mcpserver import Context
+
 from agents.impact import run_impact
 
-from . import mcp, register
+from . import mcp, register, report_while
 
 
 @register(
@@ -27,7 +29,9 @@ from . import mcp, register
     read_only=True,
     tier="combo",
 )
-def analyze_table_impact(table: str, root: str = "") -> str:
+async def analyze_table_impact(
+    table: str, root: str = "", ctx: Context = None
+) -> str:
     """테이블이 소스 어디에서 읽히고 쓰이는지 조사한다.
 
     테이블 이름이 나온 줄이 속한 SQL 문장을 통째로 잘라내 읽기/쓰기를
@@ -35,7 +39,8 @@ def analyze_table_impact(table: str, root: str = "") -> str:
     받는지 가늠하는 데 쓴다.
     """
     # summary 인 이유: SQL 전문을 돌려주면 매 턴 컨텍스트를 먹는다.
-    r = run_impact(table, root=root, detail="summary")
+    # 문장 판정은 하나에 수십 초라 진행 상황을 중계한다.
+    r = await report_while(ctx, lambda: run_impact(table, root=root, detail="summary"))
 
     if r["rule"] == "unknown-root":
         return f"{table}: 소스 루트를 찾지 못했다 — " + "; ".join(r["warnings"])
