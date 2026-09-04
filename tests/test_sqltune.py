@@ -660,3 +660,58 @@ def test_relevant_rules_falls_back_when_names_unknown():
     doc = sqltune.load_rules(config.SQLTUNE_RULES_FILE)
     assert len(sqltune.relevant_rules(doc, ["없는규칙"])) > 200
     assert len(sqltune.relevant_rules(doc, [])) > 200
+
+
+# --------------------------------------------------------------------------
+# 기준 문서와 코드의 규칙명이 어긋나지 않아야 한다
+# --------------------------------------------------------------------------
+
+
+def _doc_sections() -> set[str]:
+    """기준 문서에 '### 규칙명 — 제목' 으로 적힌 규칙 이름."""
+    import re
+
+    doc = sqltune.load_rules(config.SQLTUNE_RULES_FILE)
+    return {m.group(1) for m in re.finditer(r"^### ([a-z][a-z0-9-]*)", doc, re.M)}
+
+
+def test_every_code_rule_has_a_document_section():
+    """코드가 내는 규칙명은 모두 문서에 절이 있어야 한다.
+
+    이 문서가 판정 기준이라고 해 놓고 코드에만 있는 규칙이 생기면,
+    LLM 은 그 규칙을 근거로 삼을 수 없고 사람은 무슨 뜻인지 찾을 수 없다.
+    """
+    code_rules = {name for name, _, _ in sqltune._TEXT_RULES}
+    code_rules |= {"full-scan", "index-full-scan", "cartesian", "sort-order-by",
+                   "filter-not-access"}                      # 플랜 규칙
+    code_rules |= {"composite-index", "already-covered", "no-predicate"}  # 인덱스
+    missing = code_rules - _doc_sections()
+    assert not missing, f"문서에 없는 규칙: {sorted(missing)}"
+
+
+def test_document_targets_oracle_11g():
+    """11g 대상임이 문서에 명시돼야 한다. 12c 문법을 내놓으면 안 된다."""
+    doc = sqltune.load_rules(config.SQLTUNE_RULES_FILE)
+    assert "11g" in doc
+    assert "FETCH FIRST" in doc          # 11g 에 없다는 사실을 적어 둔다
+    assert "ROWNUM" in doc               # 대신 쓸 것
+
+
+def test_trimmed_rules_keep_fix_examples():
+    """추린 문서에 '어떻게 고치라'가 남아야 한다.
+
+    줄 단위로 뽑으면 규칙명이 있는 줄만 남고 예시가 빠진다.
+    """
+    doc = sqltune.load_rules(config.SQLTUNE_RULES_FILE)
+    t = sqltune.relevant_rules(doc, ["func-on-column"])
+    assert "TO_DATE" in t and "함수 기반 인덱스" in t
+    # 안 걸린 규칙의 본문은 빠진다.
+    assert "선행 와일드카드" not in t
+
+
+def test_trimmed_rules_always_include_version_and_criteria():
+    """어느 규칙에 걸렸든 11g 제약과 비교 기준은 늘 붙는다."""
+    doc = sqltune.load_rules(config.SQLTUNE_RULES_FILE)
+    t = sqltune.relevant_rules(doc, ["negation"])
+    assert "FETCH FIRST" in t            # 11g 에 없는 것
+    assert "결과 건수가 같은지 먼저 본다" in t

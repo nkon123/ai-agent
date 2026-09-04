@@ -105,19 +105,52 @@ def strip_trailing_semicolon(sql: str) -> str:
 
 
 def relevant_rules(rules_text: str, names: list[str]) -> str:
-    """기준 문서에서 이번에 걸린 규칙 부분만 추린다.
+    """기준 문서에서 이번에 걸린 규칙의 '절 전체'를 추린다.
 
     문서 전체를 넣으면 프롬프트가 커지고, 추론 모델은 사고 토큰까지 더해
     컨텍스트를 넘긴다(본문이 비어 나온다). 걸린 규칙만 보내면 충분하다 —
     LLM 은 우리가 찾은 문제를 고치는 역할이지 문서를 통독할 이유가 없다.
+
+    줄 단위가 아니라 절(### 제목 ~ 다음 제목) 단위로 잘라내는 이유:
+    고친 예시와 주의사항이 제목 아래 여러 줄에 걸쳐 있다. 규칙 이름이
+    있는 줄만 뽑으면 정작 '어떻게 고치라'는 부분이 빠진다.
+
+    문서 앞머리(버전 차이표)와 8항(비교 기준)은 항상 넣는다. 어느 규칙에
+    걸렸든 11g 에서 쓸 수 없는 문법을 내놓거나 건수가 달라지는 변경을
+    하면 안 되기 때문이다.
     """
-    if not names:
-        return rules_text[:1500]
+    lines = rules_text.splitlines()
+
+    # 절 경계: '### ' 로 시작하는 제목
+    sections: list[tuple[str, list[str]]] = []
+    head: list[str] = []
+    title, body = "", []
+    for line in lines:
+        if line.startswith("### "):
+            if title:
+                sections.append((title, body))
+            title, body = line, [line]
+        elif title:
+            body.append(line)
+        else:
+            head.append(line)
+    if title:
+        sections.append((title, body))
+
+    wanted = [n for n in names if n]
     keep: list[str] = []
-    for line in rules_text.splitlines():
-        if line.startswith("#") or any(n in line for n in names):
-            keep.append(line)
-    text = "\n".join(keep)
+    for sec_title, sec_body in sections:
+        if any(n in sec_title for n in wanted):
+            keep.extend(sec_body)
+
+    # 앞머리(버전 차이)와 비교 기준은 규칙과 무관하게 늘 필요하다.
+    always = [ln for ln in head if ln.strip()]
+    tail_at = next(
+        (i for i, ln in enumerate(lines) if ln.startswith("## 8.")), len(lines)
+    )
+    always += lines[tail_at:]
+
+    text = "\n".join(always + [""] + keep).strip()
     # 걸린 규칙이 문서에 없으면(이름을 바꾼 경우) 앞부분이라도 준다.
     return text if len(text) > 200 else rules_text[:1500]
 
