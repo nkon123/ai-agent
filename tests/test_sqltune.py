@@ -715,3 +715,59 @@ def test_trimmed_rules_always_include_version_and_criteria():
     t = sqltune.relevant_rules(doc, ["negation"])
     assert "FETCH FIRST" in t            # 11g 에 없는 것
     assert "결과 건수가 같은지 먼저 본다" in t
+
+
+# --------------------------------------------------------------------------
+# 후보의 실행계획 — Cost 숫자만으로는 왜 나은지 알 수 없다
+# --------------------------------------------------------------------------
+
+
+def test_candidate_plans_are_kept(monkeypatch: Any):
+    """후보마다 실행계획 행을 들고 있어야 한다.
+
+    Cost 하나만 남기면 어느 접근 경로가 바뀌었는지 볼 수 없다.
+    """
+    plans = {
+        "TO_CHAR": [
+            {"ID": 0, "OPERATION": "SELECT STATEMENT", "COST": 842},
+            {"ID": 2, "OPERATION": "TABLE ACCESS", "OPTIONS": "FULL",
+             "OBJECT_NAME": "ORD_HDR", "COST": 840},
+        ],
+        "cand_a": [
+            {"ID": 0, "OPERATION": "SELECT STATEMENT", "COST": 12},
+            {"ID": 2, "OPERATION": "INDEX", "OPTIONS": "RANGE SCAN",
+             "OBJECT_NAME": "IX_1", "COST": 3},
+        ],
+    }
+
+    def fake_explain(sql: str, timeout: Any = None):
+        for key, plan in plans.items():
+            if key in sql:
+                return plan
+        return []
+
+    monkeypatch.setattr(sqltune.oracle, "is_configured", lambda: True)
+    monkeypatch.setattr(sqltune.oracle, "existing_indexes", lambda t, schema=None: [])
+    monkeypatch.setattr(sqltune.oracle, "explain_plan", fake_explain)
+    _fake_candidates(monkeypatch, [
+        {"name": "후보1", "sql": "SELECT cand_a FROM T", "reason": "인덱스",
+         "based_on": []}
+    ])
+
+    r = run_sqltune(SLOW, compare_candidates=True, detail="full")
+    cand = [c for c in r["comparison"] if c["name"] == "후보1"][0]
+
+    assert cand["plan"], "후보의 실행계획이 없다"
+    text = sqltune.format_plan(cand["plan"])
+    assert "INDEX RANGE SCAN" in text and "IX_1" in text
+    # 원본은 원본대로 남는다.
+    base = [c for c in r["comparison"] if c["name"] == "원본"][0]
+    assert "TABLE ACCESS FULL" in sqltune.format_plan(base["plan"])
+
+
+def test_summary_omits_candidate_plans(monkeypatch: Any):
+    """계획 행은 LLM 컨텍스트에 넣지 않는다. 매 턴 컨텍스트를 먹는다."""
+    seen = _trace_db(monkeypatch)
+    s = run_sqltune(SLOW, compare_candidates=True, detail="summary")
+    assert seen  # 조회는 돌았다
+    assert all("plan" not in c for c in s["compared"])

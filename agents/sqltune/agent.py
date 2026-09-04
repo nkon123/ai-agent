@@ -640,10 +640,15 @@ def _run_maybe_parallel(fn: Any, items: list[Any], parallel: bool) -> list[Any]:
 
 
 def _measure_plan(sql: str) -> dict[str, Any]:
-    """실행계획만 받는다. 쿼리를 실행하지 않아 부하가 거의 없다."""
-    out: dict[str, Any] = {"cost": None, "plan_rows": 0, "errors": []}
+    """실행계획을 받는다. 쿼리를 실행하지 않아 부하가 거의 없다.
+
+    계획 행을 그대로 들고 간다. Cost 숫자 하나만 남기면 "왜 이 후보가
+    나은가" 를 볼 수 없다 — 어느 접근 경로가 바뀌었는지가 핵심이다.
+    """
+    out: dict[str, Any] = {"cost": None, "plan_rows": 0, "plan": [], "errors": []}
     try:
         plan = oracle.explain_plan(strip_trailing_semicolon(sql))
+        out["plan"] = plan
         out["plan_rows"] = len(plan)
         # 루트(ID 0)의 Cost 가 옵티마이저 추정 비용이다.
         for row in plan:
@@ -943,6 +948,8 @@ def run_sqltune(
         "buffers": (state.get("run") or {}).get("buffers"),
         "plan_rows": len(state.get("plan") or []),
         "best": state.get("best", ""),
+        # 계획 행은 summary 에 넣지 않는다 — 매 턴 컨텍스트를 먹는다.
+        # 화면·CLI 는 detail="full" 의 comparison 에서 가져간다.
         "compared": [
             {
                 "name": c["name"],
@@ -1046,7 +1053,7 @@ if __name__ == "__main__":
         print(f"      근거: {f['evidence'][:90]}")
 
     if result.get("plan"):
-        print("\n[실행계획]")
+        print("\n[실행계획] 원본")
         print(format_plan(result["plan"]))
 
     idx = result.get("index") or {}
@@ -1085,6 +1092,10 @@ if __name__ == "__main__":
             if c.get("sql") and c["name"] != "원본" and not c.get("rejected"):
                 print(f"\n  [{c['name']}] {c.get('reason','')}")
                 print("  " + c["sql"].replace("\n", "\n  "))
+                if c.get("plan"):
+                    # 후보의 계획도 보여 준다. 어느 접근 경로가 달라졌는지가
+                    # Cost 숫자보다 중요하다.
+                    print("  " + format_plan(c["plan"]).replace("\n", "\n  "))
 
     for w in result.get("warnings", []):
         print(f"\n[확인 필요] {w}")

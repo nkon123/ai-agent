@@ -252,6 +252,27 @@ LLM 이 기준 문서를 근거로 개선 후보를 만들고, 원본과 **같�
 비교할 때 원본은 **한 번만** 잰다. 예전에는 단독 수행 측정과 비교 측정이
 각각 원본을 돌려 느린 쿼리를 쓸데없이 더 실행했다.
 
+### 후보의 실행계획도 함께 본다
+
+비교표는 숫자만 보여 준다. 그 아래에 후보별 SQL 과 **실행계획**이 붙는다.
+Cost 가 842 에서 12 로 줄었다는 것보다, 접근 경로가 어떻게 바뀌었는지가
+판단 근거다.
+
+```
+[후보1] TO_CHAR 제거 → 범위 조건
+  SELECT ORD_NO FROM ORD_HDR WHERE REG_DT >= :d1 AND REG_DT < :d2 ORDER BY ORD_NO
+   Id Operation                    Object            Rows     Cost
+  ────────────────────────────────────────────────────────────────
+    0 SELECT STATEMENT                               1204       12
+    1 TABLE ACCESS BY INDEX ROWID  ORD_HDR           1204       12
+    2 INDEX RANGE SCAN             IX_ORD_HDR_1      1204        3
+```
+
+원본은 `TABLE ACCESS FULL`(Cost 840) 이었다. 무엇이 달라졌는지가 한눈에 보인다.
+
+계획 행은 **`summary` 에는 넣지 않는다** — 챗봇 툴이 돌려주는 값이라
+매 턴 컨텍스트를 먹는다. CLI(`detail="full"`)에서만 나온다.
+
 ### 순위 기준
 
 `Buffers → 수행시간 → Cost` 순으로 본다(기준 문서 8항).
