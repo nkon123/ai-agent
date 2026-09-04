@@ -173,3 +173,21 @@ def test_build_master_sql_rejects_injection():
         config.build_master_sql("IF_MST", {"id": "IFID OR 1=1"})
     with _pytest.raises(ValueError):
         config.build_master_sql("IF_MST", {"id": ""})   # id 는 필수다
+
+
+def test_reasoning_split_between_chat_and_agents():
+    """대화는 사고를 켜고 내부 호출은 끈다.
+
+    형식이 정해진 내부 호출에서 사고는 시간만 쓰고 본문을 비우는 일이 잦다.
+    """
+    from core.llm import get_llm
+
+    # 지정하지 않으면 에이전트 기본값(꺼짐)
+    assert get_llm().reasoning is config.AGENT_REASONING
+
+    # 명시하면 그것이 이긴다 — 판정 과제에서 필요할 때 켠다
+    assert get_llm(reasoning=True).reasoning is True
+    assert get_llm(reasoning=False).reasoning is False
+
+    # None 은 '모델 기본값' — 인자를 아예 넘기지 않는다
+    assert get_llm(reasoning=None).reasoning is None

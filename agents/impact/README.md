@@ -119,6 +119,15 @@ SQL 자체가 사라진다. Pro\*C·PL/SQL 은 코드에 그대로 박혀 있어
 영영 못 찾는다.
 
 `json_schema` 구조화 출력을 쓴다(소형 모델은 tool calling 이 자주 깨진다).
+
+**사고 과정은 기본으로 꺼져 있다**(`config.AGENT_REASONING`). 문장당 40초가
+2~3초로 줄어든다. 대신 3건짜리 표본에서 정확도가 3/3 → 1/3 이었다.
+규칙 판정은 그대로이므로 결과가 뒤집히지는 않지만, LLM 재확인이 중요하면 켠다.
+
+```bash
+AGENT_REASONING=true python agents/impact/agent.py IF_ORDER_TMP
+```
+
 비용 때문에 앞쪽 `IMPACT_MAX_STATEMENTS`(기본 8)건만 본다. 로컬 모델은
 문장 하나에 수 초가 걸려 수십 건을 돌리면 챗봇이 멎은 것처럼 보인다.
 

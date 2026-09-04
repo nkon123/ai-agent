@@ -19,7 +19,7 @@ from typing import Any
 
 from langchain_ollama import ChatOllama
 
-from config import JUDGE_MODEL, LLM_REASONING, NUM_CTX, OLLAMA_HOST
+from config import AGENT_REASONING, JUDGE_MODEL, NUM_CTX, OLLAMA_HOST
 
 
 def get_llm(model: str | None = None, **kw: Any) -> ChatOllama:
@@ -30,8 +30,12 @@ def get_llm(model: str | None = None, **kw: Any) -> ChatOllama:
     keep_alive="10m": 루프를 도는 동안 모델이 언로드되면 매 호출마다
                       수 초씩 재적재된다. 6GB 노트북에서 특히 뼈아프다.
     """
-    if LLM_REASONING is not None:
-        kw.setdefault("reasoning", LLM_REASONING)
+    # 기본은 에이전트 내부용 설정을 따른다. 대화(챗봇)는 app.py 가
+    # CHAT_REASONING 을 명시해서 부른다.
+    if kw.get("reasoning", "unset") is None:
+        kw.pop("reasoning")           # None = 모델 기본값 (인자를 넘기지 않는다)
+    elif "reasoning" not in kw and AGENT_REASONING is not None:
+        kw["reasoning"] = AGENT_REASONING
     return ChatOllama(
         base_url=OLLAMA_HOST,
         model=model or JUDGE_MODEL,
@@ -52,7 +56,7 @@ def get_structured_llm(
     스키마를 넘겨 디코딩 단계에서 문법을 강제하므로, 어긋난 JSON 이
     나올 수 없다. 판정 결과를 받아올 때는 항상 이쪽을 쓴다.
 
-    reasoning: None 이면 모델 기본값(설정을 따른다). 사고 과정은 판정
+    reasoning: None 이면 config.AGENT_REASONING 을 따른다. 사고 과정은 판정
     정확도를 크게 올리지만 토큰을 많이 쓴다 — 프롬프트가 크면 사고에
     컨텍스트를 다 써서 본문이 비어 나온다. invoke_structured() 를 쓰면
     그 경우를 자동으로 처리한다.

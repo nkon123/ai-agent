@@ -127,12 +127,20 @@ JUDGE_MODEL: str = _env_str("JUDGE_MODEL", "gemma4:e2b")
 # VRAM 6GB 노트북 기준으로 8192 가 안전한 상한이다.
 NUM_CTX: int = _env_int("NUM_CTX", 8192)
 
-# 추론(thinking) 모델의 사고 과정을 켤 것인가. None 이면 모델 기본값.
-# 대화에는 도움이 되지만 토큰과 시간을 많이 쓴다. 구조화 출력에서는
-# 이 값과 무관하게 항상 끈다(아래 core/llm.py 참고).
-LLM_REASONING: bool | None = (
-    None if not _env_str("LLM_REASONING", "") else _env_bool("LLM_REASONING", True)
+# 추론(thinking) 모델의 사고 과정을 어디서 켤 것인가.
+#
+# 대화(챗봇)는 켠다. 어떤 툴을 부를지, 결과를 어떻게 전할지 판단해야 한다.
+# 에이전트 내부 호출은 끈다. 형식이 이미 정해져 있어(구조화 출력) 사고가
+# 오히려 방해가 된다 — 사고에만 수백 초를 쓰고 본문이 비어 나오는 일이 잦다.
+#
+# 필요하면 AGENT_REASONING 을 켠다. 판정 과제(impact 의 '이 SQL 이 이
+# 테이블을 쓰는가')는 사고가 정확도를 올린다 — 3건짜리 표본에서 3/3 대 1/3
+# 이었다. 대신 문장당 3초가 40초가 된다.
+# sqltune 의 후보 생성은 이 값과 무관하게 항상 끈다(코드에서 명시한다).
+CHAT_REASONING: bool | None = (
+    None if not _env_str("CHAT_REASONING", "") else _env_bool("CHAT_REASONING", True)
 )
+AGENT_REASONING: bool | None = _env_bool("AGENT_REASONING", False)
 
 # False 면 LLM 없이 규칙만으로 동작한다. 폐쇄망/Ollama 미기동 상황에서도
 # 서버 기동과 CLI 실행이 가능해야 하므로 각 에이전트가 이 플래그를 존중한다.

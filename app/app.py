@@ -76,7 +76,10 @@ def get_agent() -> Any:
         from core.llm import get_llm
 
         _agent = create_agent(
-            model=get_llm(model=config.CHAT_MODEL),
+            # 대화는 사고 과정을 켠다. 어떤 툴을 부를지, 결과를 어떻게
+            # 전할지 판단해야 한다. 에이전트 내부 호출은 반대로 끈다
+            # (config.AGENT_REASONING) — 거기는 형식이 이미 정해져 있다.
+            model=get_llm(model=config.CHAT_MODEL, reasoning=config.CHAT_REASONING),
             tools=BRIDGE.tools(),
             system_prompt=BASE_SYSTEM_PROMPT.format(
                 tool_hints=BRIDGE.hints() or "(없음)"
