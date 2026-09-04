@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 from typing import Any, Literal, TypedDict
@@ -94,7 +95,10 @@ def collect(state: ImpactState) -> ImpactState:
 
     notify(f"{state['root_label']} 소스에서 {table} 찾는 중")
     files = scan_files(state["root_path"])
-    pattern = ident_pattern(table)
+    # SQL 식별자는 대소문자를 가리지 않는다. FROM if_order_tmp 와
+    # FROM IF_ORDER_TMP 는 같은 테이블이다. 대소문자를 따지면 소스마다
+    # 표기가 달라 통째로 놓친다.
+    pattern = ident_pattern(table, re.IGNORECASE)
     statements: list[dict[str, Any]] = []
     unreadable: list[str] = []
     seen: set[tuple[str, int]] = set()

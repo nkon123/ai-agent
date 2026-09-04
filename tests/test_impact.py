@@ -273,3 +273,45 @@ def test_all_three_source_types_are_scanned():
     r = run_impact("IF_ORDER_TMP", root="SAMPLE")
     suffixes = {Path(s["file"]).suffix for s in r["statements"]}
     assert {".pc", ".prc", ".xml"} <= suffixes
+
+
+# --------------------------------------------------------------------------
+# 대소문자 — SQL 식별자는 대소문자를 가리지 않는다
+# --------------------------------------------------------------------------
+
+MIXED_CASE = """void a(void) {
+    EXEC SQL SELECT ord_no INTO :n FROM if_order_tmp WHERE status = 'N';
+    EXEC SQL delete from If_Order_Tmp where ord_no = :n;
+}
+"""
+
+
+@pytest.fixture
+def mixed_case_root(tmp_path: Path, monkeypatch: Any) -> str:
+    """대소문자가 뒤섞인 소스 하나를 가진 루트."""
+    (tmp_path / "mixed.pc").write_text(MIXED_CASE, encoding="utf-8")
+    monkeypatch.setattr(impact, "SOURCE_ROOTS", {"CASE": str(tmp_path)})
+    from agents.usage.agent import scan_files
+
+    scan_files.cache.clear()
+    return "CASE"
+
+
+@pytest.mark.parametrize("written", ["IF_ORDER_TMP", "if_order_tmp", "If_Order_Tmp"])
+def test_table_lookup_ignores_case(written: str, mixed_case_root: str):
+    """FROM if_order_tmp 와 FROM IF_ORDER_TMP 는 같은 테이블이다.
+
+    대소문자를 따지면 소스마다 표기가 달라 통째로 놓친다.
+    """
+    r = run_impact(written, root=mixed_case_root)
+    assert r["read_count"] == 1 and r["write_count"] == 1
+
+
+def test_classify_ignores_case():
+    """읽기/쓰기 판정도 대소문자를 가리지 않는다.
+
+    여기만 가리면 같은 문장이 규칙에 따라 다르게 판정된다.
+    """
+    assert classify("delete from If_Order_Tmp where a=1;", "IF_ORDER_TMP").role == "write"
+    assert classify("select * from IF_ORDER_TMP;", "if_order_tmp").role == "read"
+    assert classify("exec p(if_order_tmp_id);", "IF_ORDER_TMP_ID").rule == "name-only"

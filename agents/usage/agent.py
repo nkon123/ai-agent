@@ -19,6 +19,7 @@ core/ 의 도구들이 왜 그렇게 생겼는지가 여기서 드러난다.
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 from typing import Any, Literal, TypedDict
@@ -45,6 +46,7 @@ MAX_FILES = 3000
 
 class UsageState(TypedDict, total=False):
     name: str
+    ignore_case: bool
     root_label: str
     root_path: str
     files_scanned: int
@@ -134,7 +136,10 @@ def search(state: UsageState) -> UsageState:
         }
 
     files = scan_files(state["root_path"])
-    pattern = ident_pattern(name)
+    # 기본은 대소문자를 가린다. 코드의 식별자는 TOTAL_AMT 와 total_amt 가
+    # 서로 다른 것이기 때문이다(SQL 테이블 이름과 다르다).
+    flags = re.IGNORECASE if state.get("ignore_case") else 0
+    pattern = ident_pattern(name, flags)
     hits: list[dict[str, Any]] = []
     unreadable: list[str] = []
 
@@ -186,6 +191,30 @@ def search(state: UsageState) -> UsageState:
             "evidence": f"{Path(first['file']).name}:{first['line']} {first['text']}",
             "warnings": warnings,
         }
+
+    # 못 찾았을 때 대소문자만 다른 것이 있는지 확인한다.
+    # 있는데 '없다'고 답하면 그게 제일 나쁘다 — 누락은 오탐보다 나쁘다.
+    if not state.get("ignore_case"):
+        loose = ident_pattern(name, re.IGNORECASE)
+        for path in files:
+            try:
+                text, _enc = read_text_with_encoding(path)
+            except OSError:
+                continue
+            lang = LANG_BY_SUFFIX.get(Path(path).suffix.lower(), "c")
+            m = loose.search(strip_comments(text, lang, mask_strings=True))
+            if m:
+                return {
+                    "files_scanned": len(files), "hits": [], "unreadable": unreadable,
+                    # '없다'가 아니라 '확인 필요'다.
+                    "used": "unknown", "decided_by": "rule", "rule": "case-mismatch",
+                    "evidence": f"{Path(path).name}: {m.group(0)}",
+                    "warnings": warnings
+                    + [
+                        f"대소문자가 다른 '{m.group(0)}' 가 있다 — 확인 필요 "
+                        "(테이블 이름이면 대소문자를 무시하고 다시 찾을 것)"
+                    ],
+                }
 
     return {
         "files_scanned": len(files), "hits": [], "unreadable": unreadable,
@@ -242,7 +271,9 @@ def _graph():
     return g.compile()
 
 
-def run_usage(name: str, root: str = "", detail: Detail = "full") -> dict[str, Any]:
+def run_usage(
+    name: str, root: str = "", detail: Detail = "full", ignore_case: bool = False
+) -> dict[str, Any]:
     """진입점.
 
         full    : 매칭된 줄 전부 (화면용, MCP 리소스로 나간다)
@@ -252,7 +283,9 @@ def run_usage(name: str, root: str = "", detail: Detail = "full") -> dict[str, A
     full 을 챗봇 툴에서 돌려주면 수백 줄이 매 턴 컨텍스트를 먹는다.
     로컬 LLM 에서는 그것만으로 대화가 무너진다.
     """
-    state: UsageState = _graph().invoke({"name": name, "root_label": root})
+    state: UsageState = _graph().invoke(
+        {"name": name, "root_label": root, "ignore_case": ignore_case}
+    )
 
     base = {
         "name": name,
@@ -301,9 +334,12 @@ if __name__ == "__main__":
     ap.add_argument("name", help="찾을 식별자")
     ap.add_argument("--root", default="", help=f"소스 루트 라벨 ({', '.join(SOURCE_ROOTS)})")
     ap.add_argument("--detail", choices=["full", "summary", "minimal"], default="full")
+    ap.add_argument("-i", "--ignore-case", action="store_true",
+                    help="대소문자를 무시한다 (테이블 이름을 찾을 때)")
     args = ap.parse_args()
 
-    result = run_usage(args.name, root=args.root, detail=args.detail)
+    result = run_usage(args.name, root=args.root, detail=args.detail,
+                       ignore_case=args.ignore_case)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
     # 규칙별 집계. 무엇이 어떤 근거로 판정됐는지 콘솔에도 남긴다.

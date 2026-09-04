@@ -214,7 +214,9 @@ def classify(sql: str, table: str, lang: str = "sql") -> StmtInfo:
             return StmtInfo(kind=kind, role="read", rule=rule, evidence=m.group(0))
 
     # 이름은 있는데 역할을 못 정했다. '아니다'가 아니라 '모른다'로 남긴다.
-    hit = ident_pattern(table).search(flat)
+    # 위의 read/write 패턴이 (?i) 인 것과 맞춘다 — 여기만 대소문자를
+    # 가리면 같은 문장이 규칙에 따라 다르게 판정된다.
+    hit = ident_pattern(table, re.IGNORECASE).search(flat)
     return StmtInfo(
         kind=kind,
         role="unknown",

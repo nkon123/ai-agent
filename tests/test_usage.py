@@ -17,6 +17,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import pytest  # noqa: E402
 from mcp.client.client import Client  # noqa: E402
 
 from agents.usage.agent import run_usage, scan_files  # noqa: E402
@@ -191,3 +192,47 @@ def test_mcp_tool_says_unknown_not_none():
 
     text = _run(_with_client(call)).content[0].text
     assert "확인 불가" in text and "확인 필요" in text
+
+
+# --------------------------------------------------------------------------
+# 대소문자 — 코드 식별자는 가리고, 다른 표기가 있으면 알려 준다
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def mixed_root(tmp_path: Path, monkeypatch: Any) -> str:
+    (tmp_path / "mixed.pc").write_text(
+        "EXEC SQL SELECT a FROM if_order_tmp;\n", encoding="utf-8"
+    )
+    import agents.usage.agent as ua
+
+    monkeypatch.setattr(ua, "SOURCE_ROOTS", {"CASE": str(tmp_path)})
+    scan_files.cache.clear()
+    return "CASE"
+
+
+def test_identifier_search_is_case_sensitive_by_default(mixed_root: str):
+    """코드의 식별자는 TOTAL_AMT 와 total_amt 가 서로 다른 것이다."""
+    assert run_usage("IF_ORDER_TMP", root=mixed_root)["hit_count"] == 0
+
+
+def test_case_only_difference_is_not_reported_as_absent(mixed_root: str):
+    """대소문자만 다른 것이 있는데 '없다'고 하면 안 된다.
+
+    '없다'와 '확인 필요'는 다른 값이다.
+    """
+    r = run_usage("IF_ORDER_TMP", root=mixed_root)
+    assert r["used"] == "unknown" and r["rule"] == "case-mismatch"
+    assert any("대소문자가 다른" in w for w in r["warnings"])
+    assert "if_order_tmp" in r["evidence"]
+
+
+def test_ignore_case_finds_it(mixed_root: str):
+    r = run_usage("IF_ORDER_TMP", root=mixed_root, ignore_case=True)
+    assert r["used"] == "yes" and r["hit_count"] == 1
+
+
+def test_truly_absent_is_still_no(mixed_root: str):
+    """진짜 없는 것은 '없다'가 맞다."""
+    r = run_usage("NO_SUCH_NAME", root=mixed_root)
+    assert r["used"] == "no" and r["rule"] == "no-hit"

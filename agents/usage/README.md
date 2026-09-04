@@ -21,6 +21,27 @@ USE_LLM=false python agents/usage/agent.py IF_A --root SAMPLE   # LLM 없이
 | `'TOTAL_AMT is not a hit'` | 문자열 — `strip_comments(mask_strings=True)` 로 마스킹 |
 | `IF_A` 안의 `A` | 식별자 경계 — `ident_pattern` (`\b` 를 쓰면 여기서 깨진다) |
 
+## 대소문자
+
+기본은 **가린다**. 코드의 식별자는 `TOTAL_AMT` 와 `total_amt` 가 서로 다른
+것이기 때문이다.
+
+다만 못 찾았을 때 대소문자만 다른 것이 있으면 `used="no"` 가 아니라
+**`unknown`** 으로 남기고 알려 준다. 있는데 '없다'고 답하는 것이 제일 나쁘다.
+
+```
+IF_ORDER_TMP: 확인 불가 (근거: rule/case-mismatch)
+확인 필요: 대소문자가 다른 'if_order_tmp' 가 있다 — 확인 필요
+```
+
+테이블 이름을 찾는 경우라면 무시하고 다시 찾는다.
+
+```bash
+python agents/usage/agent.py IF_ORDER_TMP -i
+```
+
+`impact` 는 애초에 대소문자를 무시한다 — SQL 테이블 이름이 대상이라서다.
+
 cp949 파일도 읽는다 (`read_text_with_encoding`). 사내 파일은 흔히 cp949 다.
 
 ## 판정
