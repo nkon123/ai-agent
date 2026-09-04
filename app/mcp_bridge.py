@@ -29,6 +29,7 @@ import json
 import os
 import sys
 import threading
+import time
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,9 @@ from mcp.types import ElicitResult, ErrorData
 import config
 
 _ROOT = Path(__file__).resolve().parents[1]
+
+# 이 프로세스가 시작된 시각. 재시작을 화면이 알아채는 표식이다.
+_BOOT_ID = str(int(time.time()))
 
 
 def _server_spec() -> Any:
@@ -203,6 +207,10 @@ class MCPBridge:
         info = self._client.server_info
         return {
             "connected": True,
+            # 화면이 서버 재시작을 알아채는 데 쓴다. 재시작되면 모델은
+            # 이전 대화를 기억하지 못하는데(체크포인터가 프로세스 메모리다)
+            # 화면에는 남아 있어 사용자가 오해한다.
+            "boot": _BOOT_ID,
             "protocol": self._client.protocol_version,
             "server": getattr(info, "name", ""),
             "version": getattr(info, "version", ""),
