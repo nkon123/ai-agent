@@ -358,6 +358,7 @@ def _main_table(sql: str) -> str:
 
 class TuneState(TypedDict, total=False):
     sql: str
+    binds: dict[str, Any]
     execute: bool
     compare: bool
     compare_count: bool
@@ -444,6 +445,12 @@ def index_check(state: TuneState) -> TuneState:
     }
 
 
+def missing_binds(sql: str, binds: dict[str, Any] | None) -> list[str]:
+    """값이 없는 바인드 이름. 실행 계열을 건너뛸지 판단하는 데 쓴다."""
+    given = {k.lstrip(":") for k in (binds or {})}
+    return [n for n in oracle.bind_names(sql) if n not in given]
+
+
 def run_check(state: TuneState) -> TuneState:
     """실제로 수행해 시간과 실제 계획을 받는다. 기본은 하지 않는다.
 
@@ -463,9 +470,20 @@ def run_check(state: TuneState) -> TuneState:
         warnings.append("Oracle 설정이 비어 있어 수행 비교를 못 했다 — 확인 필요")
         return {"warnings": warnings}
 
+    # 바인드 값이 없으면 실행하지 않는다. NULL 로 채워 돌리면 조건이 맞지
+    # 않아 0건이 나오는데, 그걸 '빠르다'로 읽으면 잘못된 결론이 된다.
+    lack = missing_binds(state["sql"], state.get("binds"))
+    if lack:
+        warnings.append(
+            f"바인드 값이 없어 수행하지 않았다 — 확인 필요 ({', '.join(':' + b for b in lack)}). "
+            "--bind 이름=값 으로 넘길 것"
+        )
+        return {"warnings": warnings}
+
     try:
         result = oracle.execute_with_stats(
             strip_trailing_semicolon(state["sql"]),
+            state.get("binds") or {},
             max_rows=SQLTUNE_MAX_ROWS,
             timeout=SQLTUNE_TIMEOUT_SEC,
             runs=SQLTUNE_RUNS,
@@ -577,12 +595,13 @@ def _measure_plan(sql: str) -> dict[str, Any]:
     return out
 
 
-def _measure_count(sql: str) -> dict[str, Any]:
+def _measure_count(sql: str, binds: dict[str, Any] | None = None) -> dict[str, Any]:
     """건수만 센다. 경합이 있어도 값은 바뀌지 않는다(결정적)."""
     try:
         return {
             "rows": oracle.count_rows(
-                strip_trailing_semicolon(sql), timeout=SQLTUNE_TIMEOUT_SEC
+                strip_trailing_semicolon(sql), binds or {},
+                timeout=SQLTUNE_TIMEOUT_SEC,
             ),
             "errors": [],
         }
@@ -590,7 +609,7 @@ def _measure_count(sql: str) -> dict[str, Any]:
         return {"rows": None, "errors": [f"count: {type(e).__name__}: {e}"]}
 
 
-def _measure_run_once(sql: str) -> dict[str, Any]:
+def _measure_run_once(sql: str, binds: dict[str, Any] | None = None) -> dict[str, Any]:
     """한 번 수행하고 시간과 실제 계획을 받는다.
 
     이 함수는 절대 병렬로 부르지 않는다. 동시에 돌리면 서로 CPU·I/O·
@@ -599,6 +618,7 @@ def _measure_run_once(sql: str) -> dict[str, Any]:
     try:
         r = oracle.execute_with_stats(
             strip_trailing_semicolon(sql),
+            binds or {},
             max_rows=SQLTUNE_MAX_ROWS,
             timeout=SQLTUNE_TIMEOUT_SEC,
             runs=1,
@@ -613,7 +633,9 @@ def _measure_run_once(sql: str) -> dict[str, Any]:
         return {"errors": [f"run: {type(e).__name__}: {e}"]}
 
 
-def _time_entries(entries: list[dict[str, Any]], interleave: bool) -> None:
+def _time_entries(
+    entries: list[dict[str, Any]], interleave: bool, binds: dict[str, Any] | None = None
+) -> None:
     """수행시간을 잰다. entries 를 제자리에서 갱신한다.
 
     interleave=True 면 A,B,A,B 순으로 돈다. False 면 A,A,B,B 다.
@@ -632,7 +654,7 @@ def _time_entries(entries: list[dict[str, Any]], interleave: bool) -> None:
     for _round, entry in order:
         if entry.get("rejected"):
             continue
-        got = _measure_run_once(entry["sql"])
+        got = _measure_run_once(entry["sql"], binds)
         entry.setdefault("errors", []).extend(got.get("errors") or [])
         if got.get("elapsed_sec") is None:
             continue
@@ -680,8 +702,17 @@ def compare(state: TuneState) -> TuneState:
         warnings.append("Oracle 설정이 비어 있어 후보를 비교하지 못했다 — 확인 필요")
         return {"warnings": warnings}
 
+    binds = state.get("binds") or {}
     want_count = bool(state.get("compare_count"))
     want_run = bool(state.get("execute"))
+    # 실행 계열은 바인드 값이 있어야 한다. 없으면 계획 비교까지만 한다.
+    lack = missing_binds(state["sql"], binds)
+    if lack and (want_count or want_run):
+        warnings.append(
+            f"바인드 값이 없어 건수·수행 비교를 건너뛰었다 — 확인 필요 "
+            f"({', '.join(':' + b for b in lack)}). --bind 이름=값 으로 넘길 것"
+        )
+        want_count = want_run = False
     par_explain = bool(state.get("parallel_explain", SQLTUNE_PARALLEL_EXPLAIN))
     par_count = bool(state.get("parallel_count", SQLTUNE_PARALLEL_COUNT))
     interleave = bool(state.get("interleave", SQLTUNE_INTERLEAVE_RUNS))
@@ -712,7 +743,9 @@ def compare(state: TuneState) -> TuneState:
         notify(f"결과 건수 확인 중 ({len(live)}개)")
         for entry, got in zip(
             live,
-            _run_maybe_parallel(_measure_count, [e["sql"] for e in live], par_count),
+            _run_maybe_parallel(
+                lambda q: _measure_count(q, binds), [e["sql"] for e in live], par_count
+            ),
         ):
             entry["rows"] = got["rows"]
             entry["errors"].extend(got["errors"])
@@ -739,7 +772,7 @@ def compare(state: TuneState) -> TuneState:
     # ---- 3단계: 수행시간 -------------------------------------------------
     if want_run:
         notify(f"수행시간 측정 중 ({len(live)}개 × {SQLTUNE_RUNS}회, 교차 반복)")
-        _time_entries([e for e in live if not e.get("rejected")], interleave)
+        _time_entries([e for e in live if not e.get("rejected")], interleave, binds)
         if not interleave and len(live) > 1:
             warnings.append(
                 "수행시간을 교차 반복 없이 쟀다 — 뒤에 측정한 쪽이 앞 쿼리가 "
@@ -783,6 +816,7 @@ def _graph():
 
 def run_sqltune(
     sql: str,
+    binds: dict[str, Any] | None = None,
     execute: bool | None = None,
     compare_candidates: bool | None = None,
     compare_count: bool | None = None,
@@ -797,6 +831,8 @@ def run_sqltune(
         summary : 문제 목록과 인덱스 제안 (LLM 컨텍스트에 들어간다)
         minimal : 건수만
 
+    binds              : 바인드 값 {"if_key": "EAIIF0001234"}.
+                         실행계획은 값 없이도 되지만 건수·수행 비교에는 필요하다.
     execute            : 실제 수행 여부 (None 이면 config.SQLTUNE_EXECUTE)
     compare_candidates : 개선 후보를 만들어 비교 (None 이면 config.SQLTUNE_COMPARE)
     compare_count      : 결과 건수까지 비교 (None 이면 config.SQLTUNE_COMPARE_COUNT).
@@ -812,6 +848,7 @@ def run_sqltune(
     state: TuneState = _graph().invoke(
         {
             "sql": sql,
+            "binds": binds or {},
             "execute": SQLTUNE_EXECUTE if execute is None else bool(execute),
             "compare": SQLTUNE_COMPARE if compare_candidates is None
             else bool(compare_candidates),
@@ -906,6 +943,8 @@ if __name__ == "__main__":
                     help="실행계획을 순차로 받는다 (기본은 병렬)")
     ap.add_argument("--parallel-count", action="store_true",
                     help="건수를 병렬로 센다 (빠르지만 순간 부하가 후보 수만큼 커진다)")
+    ap.add_argument("--bind", action="append", default=[], metavar="이름=값",
+                    help="바인드 값 (여러 번 쓸 수 있다). 예: --bind if_key=EAIIF0001234")
     ap.add_argument("--no-interleave", action="store_true",
                     help="수행시간을 교차 반복하지 않는다 (기본은 A,B,A,B 교차)")
     ap.add_argument("--detail", choices=["full", "summary", "minimal"], default="full")
@@ -913,8 +952,16 @@ if __name__ == "__main__":
     args = ap.parse_args()
 
     sql = args.query if args.query else read_text(args.file)
+    binds: dict[str, Any] = {}
+    for item in args.bind:
+        if "=" not in item:
+            print(f"[거부] --bind 는 이름=값 형식이다: {item}")
+            raise SystemExit(2)
+        k, v = item.split("=", 1)
+        binds[k.strip().lstrip(":")] = v
     result = run_sqltune(
         sql,
+        binds=binds,
         execute=args.run,
         # --count 는 후보 비교의 일부다. 따로 켜면 비교도 함께 켠다.
         compare_candidates=args.compare or args.count,

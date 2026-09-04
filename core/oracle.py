@@ -287,6 +287,52 @@ _PLAN_COLS = (
 )
 
 
+# 바인드 변수. :name 형태만 본다.
+# (?<![:\w]) 로 앞을 막는 이유: PL/SQL 의 ::, 그리고 a:b 같은 조각을 걸러낸다.
+_BIND_NAME = re.compile(r"(?<![:\w]):([A-Za-z][A-Za-z0-9_]*)")
+_BIND_NUM = re.compile(r"(?<![:\w]):(\d+)")
+
+
+def bind_names(sql: str) -> list[str]:
+    """SQL 에 쓰인 바인드 변수 이름. 순서 유지, 중복 제거.
+
+    주석과 문자열을 지운 사본에서 찾는다. 원문으로 찾으면 문자열 안의
+    'HH24:MI' 같은 것을 바인드로 오해한다.
+    """
+    from core.text import strip_comments
+
+    try:
+        body = strip_comments(sql, "sql", mask_strings=True)
+    except ValueError:
+        body = sql
+    out: list[str] = []
+    for name in _BIND_NAME.findall(body):
+        if name not in out:
+            out.append(name)
+    return out
+
+
+def has_numeric_binds(sql: str) -> bool:
+    """:1, :2 같은 위치 바인드가 있는가. 이름 바인드와 섞이면 다룰 수 없다."""
+    from core.text import strip_comments
+
+    try:
+        body = strip_comments(sql, "sql", mask_strings=True)
+    except ValueError:
+        body = sql
+    return bool(_BIND_NUM.search(body))
+
+
+def _null_binds(sql: str) -> dict[str, Any]:
+    """EXPLAIN PLAN 용 빈 바인드.
+
+    EXPLAIN PLAN 은 바인드 '값'을 보지 않는다(피킹하지 않는다). 다만
+    드라이버가 모든 바인드에 값을 요구하므로 None 을 채워 넣는다.
+    값을 안 넘기면 ORA-01036(illegal variable name/number)이 난다.
+    """
+    return {name: None for name in bind_names(sql)}
+
+
 def explain_plan(sql: str, timeout: int | None = None) -> list[dict[str, Any]]:
     """쿼리를 실행하지 않고 실행 계획만 받는다.
 
@@ -303,9 +349,14 @@ def explain_plan(sql: str, timeout: int | None = None) -> list[dict[str, Any]]:
             # SQL 본문은 사용자가 준 것이라 바인드로 넘길 수 없다(문장 자체다).
             # 대신 실행하지 않는 EXPLAIN PLAN 이고, 호출부가 SELECT 인지
             # 먼저 검사한다(agents/sqltune 의 안전 게이트).
+            #
+            # statement_id 를 바인드로 넘기지 않는 이유: 대상 SQL 안에도
+            # 바인드가 있으면 한 문장에 :sid 와 :업무바인드가 섞이는데,
+            # :sid 만 넘기면 나머지 값이 없어 ORA-01036 이 난다.
+            # 이 값은 우리가 uuid 로 만든 [a-z0-9_] 뿐이라 그대로 넣어도 된다.
             cur.execute(
-                f"EXPLAIN PLAN SET STATEMENT_ID = :sid FOR {sql}",
-                {"sid": statement_id},
+                f"EXPLAIN PLAN SET STATEMENT_ID = '{statement_id}' FOR {sql}",
+                _null_binds(sql),
             )
             cur.execute(
                 f"SELECT {_PLAN_COLS} FROM plan_table "
@@ -410,7 +461,11 @@ def _parse_buffers(plan_text: str) -> int | None:
     return None
 
 
-def count_rows(sql: str, timeout: int | None = None) -> int:
+def count_rows(
+    sql: str,
+    binds: Mapping[str, Any] | None = None,
+    timeout: int | None = None,
+) -> int:
     """쿼리 결과 건수만 센다.
 
     SELECT COUNT(*) FROM (원본) 으로 감싼다. 행을 전송하지 않으므로 결과를
@@ -419,9 +474,15 @@ def count_rows(sql: str, timeout: int | None = None) -> int:
 
     건수 비교는 튜닝의 전제다. 고친 쿼리가 다른 건수를 내면 그건 튜닝이
     아니라 버그다.
+
+    바인드가 있는 쿼리는 값을 넘겨야 한다. 값 없이 세면 드라이버가
+    ORA-01036 을 내고, NULL 로 채우면 조건이 안 맞아 0건이 나온다 —
+    0건을 '결과가 같다'로 읽으면 잘못된 튜닝을 통과시킨다.
     """
     rows = query(
-        f"SELECT COUNT(*) AS cnt FROM (\n{sql}\n)", timeout=timeout
+        f"SELECT COUNT(*) AS cnt FROM (\n{sql}\n)",
+        binds or {},
+        timeout=timeout,
     )
     return int(rows[0]["CNT"]) if rows else 0
 

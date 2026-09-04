@@ -275,7 +275,7 @@ def _fake_db(monkeypatch: Any, measures: dict[str, dict[str, Any]]) -> list[str]
         seen.append(f"explain:{sql}")
         return [{"ID": 0, "OPERATION": "SELECT STATEMENT", "COST": pick(sql).get("cost")}]
 
-    def fake_count(sql: str, timeout: Any = None):
+    def fake_count(sql: str, binds: Any = None, timeout: Any = None):
         seen.append(f"count:{sql}")
         return pick(sql).get("rows", 0)
 
@@ -437,7 +437,7 @@ def _trace_db(monkeypatch: Any) -> dict[str, Any]:
         enter("explain", sql); _t.sleep(0.05); leave("explain")
         return [{"ID": 0, "OPERATION": "SELECT STATEMENT", "COST": 10}]
 
-    def fake_count(sql: str, timeout: Any = None):
+    def fake_count(sql: str, binds: Any = None, timeout: Any = None):
         enter("count", sql); _t.sleep(0.05); leave("count")
         return 100
 
@@ -541,3 +541,102 @@ def test_baseline_is_not_timed_twice(monkeypatch: Any):
     # 후보 3개(원본 포함) × 2회 = 6회. 그 이상이면 중복 측정이다.
     assert len(runs) == 6, runs
     assert runs.count("원본") == 2
+
+
+# --------------------------------------------------------------------------
+# 바인드 변수 — ORA-01036 (illegal variable name/number)
+# --------------------------------------------------------------------------
+
+BOUND = "SELECT ord_no FROM ORD_HDR WHERE if_key = :if_key AND reg_dt >= :d1"
+
+
+def test_bind_names_are_found():
+    assert oracle.bind_names(BOUND) == ["if_key", "d1"]
+
+
+def test_bind_names_ignore_strings_and_comments():
+    """문자열 안의 'HH24:MI' 를 바인드로 오해하면 안 된다."""
+    assert oracle.bind_names("SELECT TO_CHAR(d,'HH24:MI') FROM t") == []
+    assert oracle.bind_names("SELECT a FROM t -- :note\n WHERE b = :b") == ["b"]
+
+
+def test_explain_supplies_values_for_every_bind(monkeypatch: Any):
+    """대상 SQL 의 바인드에 값을 안 넘기면 ORA-01036 이 난다.
+
+    EXPLAIN PLAN 은 바인드 값을 보지 않지만 드라이버는 모든 바인드에
+    값을 요구한다.
+    """
+    captured: dict[str, Any] = {}
+
+    class FakeCursor:
+        description = [("ID",), ("COST",)]
+
+        def execute(self, sql: str, binds: Any = None):
+            if "EXPLAIN PLAN" in sql:
+                captured["sql"] = sql
+                captured["binds"] = binds
+
+        def fetchall(self):
+            return [(0, 10)]
+
+        def close(self):
+            pass
+
+    class FakeConn:
+        call_timeout = 0
+
+        def cursor(self):
+            return FakeCursor()
+
+        def commit(self):
+            pass
+
+        def close(self):
+            pass
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def fake_conn():
+        yield FakeConn()
+
+    monkeypatch.setattr(oracle, "get_conn", fake_conn)
+    oracle.explain_plan(BOUND)
+
+    # 대상 SQL 의 바인드가 모두 채워져야 한다.
+    assert set(captured["binds"]) == {"if_key", "d1"}
+    # statement_id 는 바인드로 넘기지 않는다. 넘기면 대상 SQL 의 바인드와
+    # 섞여 값이 빠진 것이 생긴다.
+    assert ":sid" not in captured["sql"]
+    assert "STATEMENT_ID = 'sqltune_" in captured["sql"]
+
+
+def test_execution_is_skipped_without_bind_values(monkeypatch: Any):
+    """바인드 값이 없으면 실행하지 않는다.
+
+    NULL 로 채워 돌리면 조건이 안 맞아 0건이 나오는데, 그걸 '빠르다'로
+    읽으면 잘못된 결론이 된다.
+    """
+    seen = _trace_db(monkeypatch)
+    r = run_sqltune(BOUND, execute=True, compare_candidates=True,
+                    compare_count=True, detail="summary")
+
+    assert not any(c.startswith(("count:", "run:")) for c in seen["order"])
+    assert any("바인드 값이 없어" in w and ":if_key" in w for w in r["warnings"])
+    # 실행계획 비교는 그대로 된다.
+    assert any(c.startswith("explain:") for c in seen["order"])
+
+
+def test_bind_values_enable_execution(monkeypatch: Any):
+    seen = _trace_db(monkeypatch)
+    r = run_sqltune(BOUND, binds={"if_key": "EAIIF0001234", "d1": "20260101"},
+                    execute=True, compare_candidates=True, compare_count=True,
+                    detail="summary")
+    assert any(c.startswith("count:") for c in seen["order"])
+    assert not any("바인드 값이 없어" in w for w in r["warnings"])
+
+
+def test_missing_binds_lists_only_the_absent_ones():
+    assert sqltune.missing_binds(BOUND, {"if_key": "x"}) == ["d1"]
+    assert sqltune.missing_binds(BOUND, {":if_key": "x", "d1": "y"}) == []
+    assert sqltune.missing_binds("SELECT 1 FROM dual", None) == []
