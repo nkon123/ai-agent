@@ -1061,7 +1061,7 @@ if __name__ == "__main__":
         print(f"      근거: {f['evidence'][:90]}")
 
     if result.get("plan"):
-        print("\n[실행계획] 원본")
+        print("\n[원본-실행계획]")
         print(format_plan(result["plan"]))
 
     idx = result.get("index") or {}
@@ -1100,21 +1100,29 @@ if __name__ == "__main__":
             )
         if result.get("best"):
             print(f"\n  → 가장 나은 것: {result['best']}")
+        # 후보마다 SQL 과 실행계획을 구분해 찍는다. 붙여 놓으면 어디까지가
+        # 쿼리이고 어디부터가 계획인지 눈으로 가르기 어렵다.
         for c in comparison:
-            if c.get("sql") and c["name"] != "원본" and not c.get("rejected"):
-                print(f"\n  [{c['name']}] {c.get('reason','')}")
-                print("  " + c["sql"].replace("\n", "\n  "))
-                if c.get("plan"):
-                    # 후보의 계획도 보여 준다. 어느 접근 경로가 달라졌는지가
-                    # Cost 숫자보다 중요하다.
-                    print("  " + format_plan(c["plan"]).replace("\n", "\n  "))
-                elif c.get("errors"):
-                    # 계획이 없으면 왜 없는지 적는다. 빈칸으로 두면
-                    # '계획이 원래 안 나오나' 하고 오해한다.
-                    for err in c["errors"]:
-                        print(f"  [실행계획 없음] {err}")
-                else:
-                    print("  [실행계획 없음] DB 에 연결되지 않았다")
+            if c["name"] == "원본" or not c.get("sql") or c.get("rejected"):
+                continue
+            name = c["name"]
+            based = ", ".join(c.get("based_on") or [])
+            head = f"\n[{name}] {c.get('reason', '')}".rstrip()
+            print(head + (f"  (근거: {based})" if based else ""))
+
+            print(f"\n[{name}-SQL]")
+            print("  " + c["sql"].strip().replace("\n", "\n  "))
+
+            print(f"\n[{name}-실행계획]")
+            if c.get("plan"):
+                print(format_plan(c["plan"]))
+            elif c.get("errors"):
+                # 계획이 없으면 왜 없는지 적는다. 빈칸으로 두면
+                # '계획이 원래 안 나오나' 하고 오해한다.
+                for err in c["errors"]:
+                    print(f"  받지 못했다 — {err}")
+            else:
+                print("  받지 못했다 — DB 에 연결되지 않았다")
 
     for w in result.get("warnings", []):
         print(f"\n[확인 필요] {w}")

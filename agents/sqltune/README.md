@@ -263,37 +263,54 @@ LLM 이 기준 문서를 근거로 개선 후보를 만들고, 원본과 **같�
 
 ### 후보의 실행계획도 함께 본다
 
-비교표는 숫자만 보여 준다. 그 아래에 후보별 SQL 과 **실행계획**이 붙는다.
-Cost 가 842 에서 12 로 줄었다는 것보다, 접근 경로가 어떻게 바뀌었는지가
+비교표는 숫자만 보여 준다. 그 아래에 후보별로 **SQL 과 실행계획을 구분해서**
+찍는다. Cost 가 842 에서 12 로 줄었다는 것보다, 접근 경로가 어떻게 바뀌었는지가
 판단 근거다.
 
 ```
-[후보1] TO_CHAR 제거 → 범위 조건
-  SELECT ORD_NO FROM ORD_HDR WHERE REG_DT >= :d1 AND REG_DT < :d2 ORDER BY ORD_NO
-   Id Operation                    Object            Rows     Cost
-  ────────────────────────────────────────────────────────────────
-    0 SELECT STATEMENT                               1204       12
-    1 TABLE ACCESS BY INDEX ROWID  ORD_HDR           1204       12
-    2 INDEX RANGE SCAN             IX_ORD_HDR_1      1204        3
+[원본-실행계획]
+ Id Operation                    Object            Rows     Cost
+  0 SELECT STATEMENT                             100000      842
+  1 SORT ORDER BY                                100000      842
+  2 TABLE ACCESS FULL            ORD_HDR         100000      840
+
+[후보 비교]
+  후보          Cost        건수     시간(초)   Buffers  비고
+  원본           842         -         -         -
+  후보1           12         -         -         -  TO_CHAR 제거 → 범위 조건
+  후보2            -         -         -         -  explain: ORA-00936 …
+
+  → 가장 나은 것: 후보1
+
+[후보1] TO_CHAR 제거 → 범위 조건  (근거: func-on-column)
+
+[후보1-SQL]
+  SELECT ORD_NO, TOTAL_AMT
+    FROM ORD_HDR
+   WHERE REG_DT >= :d1 AND REG_DT < :d2
+   ORDER BY ORD_NO
+
+[후보1-실행계획]
+ Id Operation                    Object            Rows     Cost
+  0 SELECT STATEMENT                               1204       12
+  1 TABLE ACCESS BY INDEX ROWID  ORD_HDR           1204       12
+  2 INDEX RANGE SCAN             IX_ORD_HDR_1      1204        3
+
+[후보2] 열거로 변경  (근거: negation)
+
+[후보2-SQL]
+  SELECT ORD_NO FROM ORD_HDR WHERE STATUS IN ('N',)
+
+[후보2-실행계획]
+  받지 못했다 — explain: ORA-00936: missing expression
 ```
 
-원본은 `TABLE ACCESS FULL`(Cost 840) 이었다. 무엇이 달라졌는지가 한눈에 보인다.
+`TABLE ACCESS FULL`(Cost 840) 이 `INDEX RANGE SCAN`(Cost 3) 으로 바뀐 것이
+한눈에 보인다.
 
-후보의 계획이 비어 있으면 **왜 비었는지** 함께 찍는다. LLM 이 만든 SQL 은
-문법이 어긋나 EXPLAIN 부터 실패하는 일이 흔한데, 그때 표에 `-` 만 찍히면
-"계획이 원래 안 나오나" 하고 오해한다.
-
-```
-  후보          Cost  비고
-  ──────────────────────────────────────────────────────────
-  원본           840
-  후보1            -  explain: ORA-00936: missing expression
-  후보2           12  범위 조건
-
-  [확인 필요] 후보1 측정 실패 — 확인 필요: explain: ORA-00936 …
-```
-
-측정하지 못한 후보는 순위에서 빠진다.
+후보의 계획이 비어 있으면 **왜 비었는지** 그 자리에 찍는다. LLM 이 만든 SQL 은
+문법이 어긋나 EXPLAIN 부터 실패하는 일이 흔한데, 그때 아무 말이 없으면
+"계획이 원래 안 나오나" 하고 오해한다. 측정하지 못한 후보는 순위에서 빠진다.
 
 계획 행은 **`summary` 에는 넣지 않는다** — 챗봇 툴이 돌려주는 값이라
 매 턴 컨텍스트를 먹는다. CLI(`detail="full"`)에서만 나온다.
