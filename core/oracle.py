@@ -305,10 +305,15 @@ def bind_names(sql: str) -> list[str]:
         body = strip_comments(sql, "sql", mask_strings=True)
     except ValueError:
         body = sql
+    # 오라클 바인드 이름은 대소문자를 가리지 않는다. :d1 과 :D1 은 같은
+    # 바인드다. 둘 다 넘기면 문장에 없는 바인드를 준 셈이 되어 ORA-01036 이 난다.
     out: list[str] = []
+    seen: set[str] = set()
     for name in _BIND_NAME.findall(body):
-        if name not in out:
-            out.append(name)
+        if name.upper() in seen:
+            continue
+        seen.add(name.upper())
+        out.append(name)
     return out
 
 
@@ -323,14 +328,36 @@ def has_numeric_binds(sql: str) -> bool:
     return bool(_BIND_NUM.search(body))
 
 
-def _null_binds(sql: str) -> dict[str, Any]:
-    """EXPLAIN PLAN 용 빈 바인드.
+def driver_bind_names(cur: Any, sql: str) -> list[str]:
+    """드라이버가 파싱한 실제 바인드 이름. 실패하면 정규식 결과로 대체한다.
 
-    EXPLAIN PLAN 은 바인드 '값'을 보지 않는다(피킹하지 않는다). 다만
-    드라이버가 모든 바인드에 값을 요구하므로 None 을 채워 넣는다.
-    값을 안 넘기면 ORA-01036(illegal variable name/number)이 난다.
+    정규식으로 짐작하지 않는 이유:
+        ORA-01036 은 값을 '빠뜨렸을 때' 뿐 아니라 문장에 없는 바인드를
+        '더 넘겼을 때'도 난다. 정규식은 양쪽으로 다 틀린다 —
+        :d1 과 :D1 을 다른 것으로 세거나(오라클은 같다), :1 같은 위치
+        바인드를 놓치거나, 따옴표가 안 닫힌 SQL 에서 뒷부분을 통째로
+        문자열로 보고 건너뛴다. LLM 이 만든 후보 SQL 에서 실제로 겪었다.
+
+        cursor.prepare() 뒤 bindnames() 를 물으면 정답이 나온다.
     """
-    return {name: None for name in bind_names(sql)}
+    try:
+        cur.prepare(sql)
+        names = list(cur.bindnames() or [])
+        if names:
+            return names
+    except Exception:
+        pass
+    return bind_names(sql)
+
+
+def _match_binds(names: list[str], given: Mapping[str, Any] | None) -> dict[str, Any]:
+    """드라이버가 요구하는 이름에 사용자가 준 값을 맞춘다.
+
+    이름 비교는 대소문자를 무시한다(오라클 규칙). 값이 없으면 None 을
+    넣는다 — EXPLAIN PLAN 은 값을 보지 않으므로 그것으로 충분하다.
+    """
+    lookup = {k.lstrip(":").upper(): v for k, v in (given or {}).items()}
+    return {name: lookup.get(name.upper()) for name in names}
 
 
 def explain_plan(sql: str, timeout: int | None = None) -> list[dict[str, Any]]:
@@ -354,10 +381,10 @@ def explain_plan(sql: str, timeout: int | None = None) -> list[dict[str, Any]]:
             # 바인드가 있으면 한 문장에 :sid 와 :업무바인드가 섞이는데,
             # :sid 만 넘기면 나머지 값이 없어 ORA-01036 이 난다.
             # 이 값은 우리가 uuid 로 만든 [a-z0-9_] 뿐이라 그대로 넣어도 된다.
-            cur.execute(
-                f"EXPLAIN PLAN SET STATEMENT_ID = '{statement_id}' FOR {sql}",
-                _null_binds(sql),
-            )
+            stmt = f"EXPLAIN PLAN SET STATEMENT_ID = '{statement_id}' FOR {sql}"
+            # 드라이버에게 실제 바인드를 묻고 그 이름 그대로 값을 채운다.
+            # 하나라도 빠지거나 남으면 ORA-01036 이다.
+            cur.execute(stmt, _match_binds(driver_bind_names(cur, stmt), None))
             cur.execute(
                 f"SELECT {_PLAN_COLS} FROM plan_table "
                 "WHERE statement_id = :sid ORDER BY id",
@@ -555,7 +582,13 @@ def query(
         conn.call_timeout = int((timeout or DB_TIMEOUT_SEC) * 1000)
         cur = conn.cursor()
         try:
-            cur.execute(sql, binds or {})
+            if isinstance(binds, Mapping) or binds is None:
+                # 이름 바인드는 드라이버가 파싱한 이름에 맞춰 넘긴다.
+                # 대소문자가 다르거나 값이 빠지면 ORA-01036 이 난다.
+                names = driver_bind_names(cur, sql)
+                cur.execute(sql, _match_binds(names, binds) if names else {})
+            else:
+                cur.execute(sql, binds)
             if cur.description is None:  # SELECT 가 아닌 경우
                 return []
             cols = [d[0] for d in cur.description]

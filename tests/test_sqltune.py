@@ -799,3 +799,125 @@ def test_candidate_measure_failure_is_reported(monkeypatch: Any):
     assert any("후보1 측정 실패" in w and "ORA-00936" in w for w in r["warnings"])
     # 측정 못 한 후보가 이기면 안 된다.
     assert r["best"] == "원본"
+
+
+# --------------------------------------------------------------------------
+# ORA-01036 재발 방지 — 바인드는 드라이버에게 묻는다
+# --------------------------------------------------------------------------
+
+
+class _FakeCursor:
+    """oracledb 커서 흉내.
+
+    실제 드라이버처럼 (1) 준비한 문장에서 바인드 이름을 뽑아 대문자로 주고
+    (2) 넘어온 이름이 남거나 모자라면 ORA-01036 을 낸다.
+    """
+
+    description = [("ID",), ("COST",)]
+
+    def __init__(self, rows: Any = None) -> None:
+        self._sql = ""
+        self._rows = rows if rows is not None else [(0, 10)]
+        self.executed: list[tuple[str, Any]] = []
+
+    @staticmethod
+    def _names_of(sql: str) -> list[str]:
+        import re
+
+        out: list[str] = []
+        for m in re.finditer(r"(?<![:\w]):([A-Za-z][A-Za-z0-9_]*|\d+)", sql):
+            name = m.group(1).upper()
+            if name not in out:
+                out.append(name)
+        return out
+
+    def prepare(self, sql: str) -> None:
+        self._sql = sql
+
+    def bindnames(self) -> list[str]:
+        return self._names_of(self._sql)
+
+    def execute(self, sql: str, binds: Any = None):
+        want = {n.upper() for n in self._names_of(sql)}
+        got = {str(k).upper() for k in (binds or {})}
+        if want != got:
+            raise RuntimeError(
+                f"ORA-01036: illegal variable name/number "
+                f"(필요 {sorted(want)}, 받음 {sorted(got)})"
+            )
+        self.executed.append((sql, binds))
+
+    def fetchall(self):
+        return self._rows
+
+    def close(self):
+        pass
+
+
+def _fake_conn(cursor: _FakeCursor) -> Any:
+    import contextlib
+
+    class Conn:
+        call_timeout = 0
+
+        def cursor(self):
+            return cursor
+
+        def commit(self):
+            pass
+
+        def close(self):
+            pass
+
+    @contextlib.contextmanager
+    def maker():
+        yield Conn()
+
+    return maker
+
+
+def test_explain_uses_driver_bind_names(monkeypatch: Any):
+    """드라이버가 파싱한 이름 그대로 값을 채운다.
+
+    정규식으로 짐작하면 :d1 과 :D1 을 둘로 세거나 :1 을 놓쳐 ORA-01036 이 난다.
+    """
+    cur = _FakeCursor()
+    monkeypatch.setattr(oracle, "get_conn", _fake_conn(cur))
+
+    oracle.explain_plan("SELECT a FROM t WHERE k = :if_key AND d >= :d1 AND d < :D1")
+
+    stmt, binds = cur.executed[0]
+    assert set(binds) == {"IF_KEY", "D1"}          # 남지도 모자라지도 않는다
+    assert all(v is None for v in binds.values())  # EXPLAIN 은 값을 안 본다
+
+
+def test_explain_handles_numeric_binds(monkeypatch: Any):
+    """:1 같은 위치 바인드도 드라이버가 알려 주면 그대로 채운다."""
+    cur = _FakeCursor()
+    monkeypatch.setattr(oracle, "get_conn", _fake_conn(cur))
+
+    oracle.explain_plan("SELECT a FROM t WHERE x = :1 AND y = :2")
+    assert set(cur.executed[0][1]) == {"1", "2"}
+
+
+def test_case_only_duplicate_is_counted_once():
+    """오라클 바인드 이름은 대소문자를 가리지 않는다."""
+    assert oracle.bind_names("SELECT a FROM t WHERE d >= :d1 AND d < :D1") == ["d1"]
+
+
+def test_query_matches_user_binds_case_insensitively(monkeypatch: Any):
+    """사용자가 준 이름의 대소문자가 달라도 맞춰 넘긴다."""
+    cur = _FakeCursor()
+    monkeypatch.setattr(oracle, "get_conn", _fake_conn(cur))
+
+    oracle.query("SELECT a FROM t WHERE k = :if_key", {"if_key": "X"})
+    assert cur.executed[0][1] == {"IF_KEY": "X"}
+
+
+def test_count_rows_passes_binds(monkeypatch: Any):
+    """건수 세기도 같은 경로를 탄다."""
+    cur = _FakeCursor(rows=[(7,)])
+    cur.description = [("CNT",)]
+    monkeypatch.setattr(oracle, "get_conn", _fake_conn(cur))
+
+    assert oracle.count_rows("SELECT a FROM t WHERE k = :if_key", {"IF_KEY": "X"}) == 7
