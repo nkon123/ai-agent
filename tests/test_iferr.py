@@ -37,6 +37,9 @@ def eml_backend(monkeypatch: Any) -> None:
     # 하루만 지나도 샘플이 범위 밖으로 밀려 테스트가 깨진다.
     # 기간 해석 자체는 parse_period 로 따로 검증하므로 여기서는 넉넉히 잡는다.
     monkeypatch.setattr(outlook, "MAIL_LOOKBACK_HOURS", 24 * 3650)
+    # 이 파일은 키워드·정규식 판정을 고정한다. LLM 판정은 test_iferr_llm.py 가
+    # 가짜 LLM 으로 따로 본다 — 여기서 실제 Ollama 를 부르면 결과가 모델에 달린다.
+    monkeypatch.setattr(iferr, "IFERR_MAIL_JUDGE", "keyword")
     iferr._query_cached.cache.clear()
 
 

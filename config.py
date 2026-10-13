@@ -220,6 +220,21 @@ MAIL_SUBJECT_STRIP_PREFIXES: tuple[str, ...] = tuple(
     p for p in _env_str("MAIL_SUBJECT_STRIP_PREFIXES", "").split(",") if p.strip()
 )
 
+# 오류 메일 판정과 인터페이스 ID 추출을 무엇으로 하는가.
+#   llm     : LLM 이 메일마다 '오류 알림인가'와 'ID 가 무엇인가'를 읽는다 (기본).
+#             제목 키워드·정규식은 안전망으로 함께 돈다 — 키워드가 잡은 메일을
+#             LLM 이 아니라고 해도 빼지 않고 '확인 필요'로 남긴다(누락이 더 나쁘다).
+#             LLM 이 낸 ID 는 본문에 그대로 있을 때만 쓴다(지어낸 ID 차단).
+#   keyword : 제목 키워드 + 정규식만. USE_LLM=false 이면 이 값과 무관하게 이 방식이다.
+IFERR_MAIL_JUDGE: str = _env_str("IFERR_MAIL_JUDGE", "llm")
+
+# LLM 으로 판정할 메일 수 상한. 로컬 모델은 메일 한 통에 수 초가 걸린다.
+# 넘는 메일은 키워드로만 판정하고 경고를 남긴다.
+IFERR_LLM_MAX_MAILS: int = _env_int("IFERR_LLM_MAX_MAILS", 30)
+
+# LLM 에 넘길 본문 글자 수. 길면 앞부분만 — 알림 메일의 ID 는 대개 앞에 있다.
+IFERR_LLM_BODY_CHARS: int = _env_int("IFERR_LLM_BODY_CHARS", 3000)
+
 # --------------------------------------------------------------------------
 # 인터페이스 오류 확인 (iferr 에이전트)
 # --------------------------------------------------------------------------
@@ -608,6 +623,13 @@ def describe() -> str:
         f"  DB_TIMEOUT   : {DB_TIMEOUT_SEC}s",
         f"  오류 키워드   : {', '.join(MAIL_SUBJECT_KEYWORDS) or '(없음 — 전부 대상 아님)'}"
         + f"  [{MAIL_SUBJECT_MATCH}]",
+        f"  메일 판정     : "
+        + (
+            f"LLM ({JUDGE_MODEL}, 최대 {IFERR_LLM_MAX_MAILS}통) + 키워드 안전망"
+            if USE_LLM and IFERR_MAIL_JUDGE.strip().lower() == "llm"
+            else "키워드만"
+            + (" (USE_LLM=false)" if IFERR_MAIL_JUDGE.strip().lower() == "llm" else "")
+        ),
         f"  MAIL         : {MAIL_BACKEND} / "
         + (MAIL_FOLDER or "(기본 받은 편지함)" if MAIL_BACKEND == "com" else MAIL_EML_DIR)
         + f" / 최근 {MAIL_LOOKBACK_HOURS}h",

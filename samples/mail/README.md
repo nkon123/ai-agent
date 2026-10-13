@@ -16,6 +16,7 @@ MAIL_BACKEND=eml python agents/iferr/agent.py
 | `06_eaa_forwarded.eml` | `RE: FW:` 가 붙은 사본 → 기본 설정에서는 빠져야 한다 |
 | `07_mentions_eaa.eml` | 제목 중간에 머리말 언급 → `startswith` 에서는 빠져야 한다 |
 | `08_prefix_id.eml` | "접두어 + 숫자" ID(`ABCIF0001234`). 본문의 `ABCIF0001234_TMP` 는 키가 아니다 |
+| `09_no_keyword_failure.eml` | 제목에 '오류·실패'가 없는 실패 알림 → 키워드는 놓치고 **LLM 판정만 잡는다** |
 
 ```bash
 MAIL_BACKEND=eml MAIL_SUBJECT_MATCH=startswith \

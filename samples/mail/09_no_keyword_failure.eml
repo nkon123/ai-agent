@@ -1,0 +1,15 @@
+Subject: =?utf-8?b?7KO866y47Leo7IaMIOyghOyGoSDqsbQg7ZmV7J24IOu2gO2DgeuTnOumveuLiA==?=
+ =?utf-8?b?64uk?=
+From: if.monitor@partner.example
+To: erp.admin@corp.example
+Date: Thu, 03 Sep 2026 14:20:10 -0000
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+MIME-Version: 1.0
+
+안녕하세요, 연계 담당자입니다.
+
+오늘 10:30 배치에서 주문취소 인터페이스(IF_ORD_CANCEL)가 상대 시스템 응답 지연으로
+전송되지 못했습니다. 미전송 12건이 남아 있습니다.
+
+재처리 가능 여부 회신 부탁드립니다.
