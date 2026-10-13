@@ -94,6 +94,12 @@ MAIL_SUBJECT_KEYWORDS = ("(EAA) Alert Mail",)
 # 표시가 붙어 원본과 구별된다.
 # MAIL_SUBJECT_STRIP_PREFIXES = ("RE:", "FW:", "FWD:", "답장:", "회신:", "전달:")
 
+# 오류 메일 판정·ID 추출 방식. 기본 "llm" — LLM 이 메일마다 읽고, 위 키워드는
+# 안전망으로 함께 돈다. Ollama 가 없는 PC 는 "keyword" 로 두거나 USE_LLM=False.
+# IFERR_MAIL_JUDGE = "llm"
+# IFERR_LLM_MAX_MAILS = 30      # 한 번에 LLM 이 볼 메일 수 (넘으면 키워드로만)
+# IFERR_LLM_BODY_CHARS = 3000   # LLM 에 넘길 본문 앞부분 글자 수
+
 # --------------------------------------------------------------------------
 # 인터페이스 키 추출
 # --------------------------------------------------------------------------

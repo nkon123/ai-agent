@@ -3,7 +3,8 @@
 타 시스템에서 데이터를 받다 오류가 나면 인터페이스 키가 적힌 메일이 온다.
 그 키로 테이블을 확인해 '어떤 데이터가 어떻게 영향을 받는지'를 정리한다.
 
-    메일 수집 → 키 추출 → DB 조회 → 영향 판정 → (선택) LLM 요약
+    메일 수집 → 오류 판정·키 추출(LLM + 키워드 안전망) → DB 조회 → 영향 판정
+    → (선택) LLM 요약
 
 단독 실행:
     python agents/iferr/agent.py                       # 최근 24시간
@@ -37,10 +38,14 @@ from langgraph.graph import END, START, StateGraph  # noqa: E402
 from config import (  # noqa: E402
     IFERR_KEY_PATTERNS,
     IFERR_KEY_PREFIXES,
+    IFERR_LLM_BODY_CHARS,
+    IFERR_LLM_MAX_MAILS,
+    IFERR_MAIL_JUDGE,
     IFERR_MASTER_FIELDS,
     IFERR_MAX_ROWS,
     IFERR_SQL,
     IFERR_STATUS_COLUMNS,
+    JUDGE_MODEL,
     MAIL_LOOKBACK_HOURS,
     MAIL_SUBJECT_KEYWORDS,
     MAIL_SUBJECT_MATCH,
@@ -50,6 +55,8 @@ from config import (  # noqa: E402
 from core import oracle  # noqa: E402
 from core.cache import cached  # noqa: E402
 from core.outlook import Mail, MailUnavailable, read_mails  # noqa: E402
+from core.progress import notify  # noqa: E402
+from core.text import ident_pattern  # noqa: E402
 
 Detail = Literal["full", "summary", "minimal"]
 
@@ -263,6 +270,214 @@ def is_error_mail(mail: Mail) -> bool:
 
 
 # --------------------------------------------------------------------------
+# LLM 판정 — 메일이 오류 알림인가, 인터페이스 ID 는 무엇인가
+#
+# 키워드는 제목에 그 단어가 있어야만 잡는다. "전송 건 확인 부탁드립니다"처럼
+# 오류라는 말 없이 오는 알림, 형식이 제각각인 ID 는 놓친다. LLM 은 그 빈틈을
+# 메운다. 다만 LLM 이 규칙을 뒤집지는 않는다:
+#   - 키워드가 잡은 메일을 LLM 이 아니라고 하면 빼지 않고 '확인 필요'로 남긴다.
+#     누락은 오탐보다 나쁘다.
+#   - LLM 이 낸 ID 는 메일에 그대로 적혀 있을 때만 쓴다. 소형 모델은 그럴듯한
+#     ID 를 지어내고, 지어낸 키로 DB 를 조회하면 '데이터 없음'이 나와
+#     장애가 없는 것처럼 보인다.
+#   - LLM 이 실패하면 그 메일은 키워드로 판정하고 그 사실을 남긴다.
+# --------------------------------------------------------------------------
+
+# 사람이 회신·전달한 사본. 원본 알림의 중복이라 LLM 에 보내지 않는다 —
+# 보내면 "RE: FW: 재고 연계 실패" 를 오류로 읽어 같은 장애가 두 번 잡힌다.
+# 사본까지 보려면 MAIL_SUBJECT_STRIP_PREFIXES 를 설정한다(그때는 보낸다).
+_REPLY_COPY = re.compile(r"^\s*(RE|FW|FWD|회신|전달|답장)\s*:", re.IGNORECASE)
+
+# ID 로 받아 줄 모양. 공백·한글이 섞이면 문장 조각이지 ID 가 아니다.
+_ID_SHAPE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_\-.]{1,59}")
+
+
+def llm_judge_enabled() -> bool:
+    """이번 실행에서 LLM 판정을 쓰는가. USE_LLM=false 면 설정과 무관하게 끈다."""
+    return USE_LLM and (IFERR_MAIL_JUDGE or "").strip().lower() == "llm"
+
+
+def is_reply_copy(subject: str) -> bool:
+    return not MAIL_SUBJECT_STRIP_PREFIXES and bool(_REPLY_COPY.match(subject or ""))
+
+
+def _llm_prompt(mail: Mail) -> str:
+    body = (mail.body or "").strip()
+    cut = len(body) > IFERR_LLM_BODY_CHARS
+    body = body[:IFERR_LLM_BODY_CHARS] + ("\n…(이하 생략)" if cut else "")
+    hint = (
+        f"이 회사의 인터페이스 ID 는 대개 {', '.join(IFERR_KEY_PREFIXES)} 로 시작한다. "
+        if IFERR_KEY_PREFIXES
+        else ""
+    )
+    return (
+        "너는 시스템 연계(인터페이스) 장애 알림 메일을 분류한다.\n"
+        "1) is_error: 이 메일이 인터페이스·연계·전송·배치 처리가 실패했거나 오류가 났음을 "
+        "알리는 메일이면 true. 정상 처리 결과 보고, 일정 안내, 설정 문의, 단순 공지는 false.\n"
+        "2) interface_ids: 메일에 적힌 인터페이스 ID 를 적힌 글자 그대로 옮겨라. "
+        f"{hint}"
+        "테이블 이름, 오류 코드(ORA-01400 등), 건수, 날짜, 사람 이름은 ID 가 아니다. "
+        "ID 가 없으면 빈 목록. 메일에 없는 ID 를 만들지 마라.\n"
+        "3) reason: 판단 근거를 한 문장으로.\n\n"
+        f"제목: {mail.subject}\n"
+        f"본문:\n{body}"
+    )
+
+
+@cached(ttl=3600, maxsize=512, key=lambda mail: (mail.source, mail.subject, JUDGE_MODEL))
+def llm_judge_mail(mail: Mail) -> dict[str, Any]:
+    """LLM 판정 하나. {is_error, interface_ids, reason, note}. 실패하면 예외.
+
+    같은 메일은 내용이 바뀌지 않으므로 길게 캐시한다. 기간을 바꿔 다시
+    물을 때마다 수십 통을 다시 판정하면 답이 몇 분씩 늦어진다.
+    """
+    from pydantic import BaseModel, Field
+
+    from core.llm import invoke_structured
+
+    class MailVerdict(BaseModel):
+        is_error: bool = Field(description="인터페이스 처리 실패·오류를 알리는 메일인가")
+        interface_ids: list[str] = Field(description="메일에 적힌 인터페이스 ID, 적힌 그대로")
+        reason: str = Field(description="판단 근거 한 문장")
+
+    v, note = invoke_structured(MailVerdict, _llm_prompt(mail))
+    return {
+        "is_error": bool(v.is_error),
+        "interface_ids": [str(x) for x in (v.interface_ids or [])][:20],
+        "reason": str(v.reason or "").strip()[:200],
+        "note": note,
+    }
+
+
+def verify_llm_keys(text: str, ids: list[str]) -> tuple[list[dict[str, str]], list[str]]:
+    """LLM 이 낸 ID 중 메일에 실제로 있는 것만. (통과 [{key, rule, evidence}], 버린 것)
+
+    식별자 경계로 찾는다 — 본문에 ABCIF0001234_TMP 만 있는데 LLM 이
+    ABCIF0001234 를 내면 버린다. 잘린 키로 조회하면 엉뚱한 행을 집는다.
+    키는 메일에 적힌 표기를 쓴다(LLM 이 대소문자를 바꿔 내는 경우가 있다).
+    """
+    kept: list[dict[str, str]] = []
+    rejected: list[str] = []
+    seen: set[str] = set()
+    for raw in ids:
+        cand = str(raw).strip().strip("[](){}<>\"'`.,:;")
+        if not cand or cand.upper() in seen:
+            continue
+        m = ident_pattern(cand, re.IGNORECASE).search(text) if _ID_SHAPE.fullmatch(cand) else None
+        if not m:
+            rejected.append(cand[:60])
+            continue
+        seen.add(cand.upper())
+        start, end = max(0, m.start() - 20), min(len(text), m.end() + 20)
+        kept.append({"key": m.group(0), "rule": "llm",
+                     "evidence": " ".join(text[start:end].split())})
+    return kept, rejected
+
+
+def judge_mails(mails: list[Mail]) -> tuple[list[dict[str, Any]], list[str]]:
+    """메일마다 오류 여부와 키를 정한다. 통합 툴과 단계 툴이 같이 쓴다.
+
+    돌려주는 판정 하나:
+        mail, is_error, matched(걸린 키워드), via_prefix,
+        judged_by   rule | llm | rule+llm
+        keys        [{key, rule, evidence}]  — rule 은 정규식 규칙명 또는 llm
+        llm         {is_error, reason} | None (LLM 을 안 썼거나 실패)
+        conflict    키워드와 LLM 이 다르게 봤다 — 사람이 볼 것
+    """
+    use_llm = llm_judge_enabled()
+    warnings: list[str] = []
+    out: list[dict[str, Any]] = []
+    asked = 0
+    skipped_for_cap = 0
+    failures: list[str] = []
+    dropped: list[str] = []
+
+    targets = [m for m in mails if not is_reply_copy(m.subject)] if use_llm else []
+    total = min(len(targets), IFERR_LLM_MAX_MAILS)
+
+    for mail in mails:
+        hit, via_prefix = match_info(mail)
+        text = f"{mail.subject}\n{mail.body}"
+        verdict: dict[str, Any] | None = None
+
+        if use_llm and not is_reply_copy(mail.subject):
+            if asked >= IFERR_LLM_MAX_MAILS:
+                skipped_for_cap += 1
+            else:
+                asked += 1
+                # 메일 한 통에 수 초가 걸린다. 몇 번째인지 알려야 기다릴 수 있다.
+                notify(f"메일 판정 중 {asked}/{total} ({mail.subject[:24]})")
+                try:
+                    verdict = llm_judge_mail(mail)
+                except Exception as e:
+                    failures.append(f"{type(e).__name__}: {e}")
+                    verdict = None
+                if verdict and verdict.get("note") and verdict["note"] not in warnings:
+                    warnings.append(verdict["note"])
+
+        llm_error = bool(verdict and verdict["is_error"])
+        is_error = bool(hit) or llm_error
+        if verdict is None:
+            judged_by = "rule"
+        elif hit and llm_error:
+            judged_by = "rule+llm"
+        elif llm_error:
+            judged_by = "llm"
+        else:
+            judged_by = "rule"          # 키워드만 걸렸거나 둘 다 아니다
+        conflict = bool(verdict) and bool(hit) and not llm_error
+
+        keys: list[dict[str, str]] = []
+        if is_error:
+            keys = extract_keys(text)
+            if verdict:
+                llm_keys, rejected = verify_llm_keys(text, verdict["interface_ids"])
+                dropped += rejected
+                have = {k["key"].upper(): k for k in keys}
+                for k in llm_keys:
+                    if k["key"].upper() in have:
+                        # 정규식과 LLM 이 같은 키를 냈다 — 근거가 둘이다.
+                        have[k["key"].upper()]["rule"] += "+llm"
+                    else:
+                        keys.append(k)
+
+        out.append({
+            "mail": mail,
+            "is_error": is_error,
+            "matched": hit,
+            "via_prefix": via_prefix,
+            "judged_by": judged_by,
+            "keys": keys,
+            "llm": None if verdict is None else
+                   {"is_error": verdict["is_error"], "reason": verdict["reason"]},
+            "conflict": conflict,
+        })
+
+    if failures:
+        warnings.append(
+            f"LLM 판정 실패 {len(failures)}통 — 그 메일은 키워드로만 판정했다, "
+            f"확인 필요: {failures[0]}"
+        )
+    if skipped_for_cap:
+        warnings.append(
+            f"메일이 많아 {skipped_for_cap}통은 키워드로만 판정했다 "
+            f"(IFERR_LLM_MAX_MAILS={IFERR_LLM_MAX_MAILS}) — 기간을 좁히면 전부 LLM 이 본다"
+        )
+    if dropped:
+        warnings.append(
+            f"LLM 이 낸 ID 중 메일에 없는 것 {len(dropped)}개를 버렸다: "
+            f"{', '.join(dropped[:3])}"
+        )
+    for j in out:
+        if j["conflict"]:
+            warnings.append(
+                f"키워드는 오류로, LLM 은 오류 아님으로 봤다 — 확인 필요: "
+                f"{j['mail'].subject[:60]} (LLM: {j['llm']['reason']})"
+            )
+    return out, warnings
+
+
+# --------------------------------------------------------------------------
 # 노드 1 — 메일 수집
 # --------------------------------------------------------------------------
 
@@ -316,22 +531,26 @@ def find_keys(state: IfErrState) -> IfErrState:
     cases: dict[str, dict[str, Any]] = {}
     unmatched: list[str] = []
 
-    for mail in state.get("mails") or []:
-        if not is_error_mail(mail):
+    # 오류 판정과 키 추출은 judge_mails 한 곳에서 한다(키워드 또는 LLM).
+    # 제목과 본문 양쪽에서 찾는다. 본문 표에 키가 있는 형식이 흔하다.
+    judged, judge_warnings = judge_mails(state.get("mails") or [])
+    for j in judged:
+        if not j["is_error"]:
             continue
-        # 제목과 본문 양쪽에서 찾는다. 본문 표에 키가 있는 형식이 흔하다.
-        hits = extract_keys(f"{mail.subject}\n{mail.body}")
-        if not hits:
+        mail = j["mail"]
+        if not j["keys"]:
             # 오류 메일인데 키를 못 뽑았다 — 조용히 버리면 장애를 놓친다.
             unmatched.append(mail.subject[:80])
             continue
-        for h in hits:
+        for h in j["keys"]:
             case = cases.setdefault(
                 h["key"].upper(),
                 {
                     "key": h["key"],
                     "found_by": h["rule"],
                     "evidence": h["evidence"],
+                    # 이 메일을 무엇이 오류로 봤는가 — 키를 무엇이 뽑았는가와 별개다.
+                    "judged_by": j["judged_by"],
                     "mails": [],
                 },
             )
@@ -341,10 +560,12 @@ def find_keys(state: IfErrState) -> IfErrState:
                     "received": mail.received.isoformat() if mail.received else "",
                     # 발신자 주소를 그대로 남기지 않는다.
                     "sender": mail.sender_masked,
+                    "judged_by": j["judged_by"],
+                    "llm_reason": (j["llm"] or {}).get("reason", ""),
                 }
             )
 
-    warnings = list(state.get("warnings") or [])
+    warnings = list(state.get("warnings") or []) + judge_warnings
     if unmatched:
         warnings.append(
             f"키를 뽑지 못한 오류 메일 {len(unmatched)}건 — 확인 필요 "
@@ -678,6 +899,9 @@ def run_iferr(
                     "status": (c.get("db") or {}).get("status", "unknown"),
                     "impact": c.get("impact", ""),
                     "rule": c.get("rule", ""),
+                    # 메일을 무엇이 오류로 봤고 키를 무엇이 뽑았는가. 오판을 되짚는 근거다.
+                    "judged_by": c.get("judged_by", ""),
+                    "found_by": c.get("found_by", ""),
                     "flows": c.get("flows") or [],
                     "mail_count": len(c.get("mails") or []),
                 }
@@ -724,20 +948,24 @@ def list_mails(hours: int | None = None, detail: Detail = "full") -> dict[str, A
         }
 
     rows: list[dict[str, Any]] = []
-    for m in state.get("mails") or []:
-        hit, via_prefix = match_info(m)
-        keys = extract_keys(f"{m.subject}\n{m.body}") if hit else []
+    judged, judge_warnings = judge_mails(state.get("mails") or [])
+    for j in judged:
+        m = j["mail"]
         rows.append(
             {
                 "subject": m.subject,
                 "received": m.received.isoformat() if m.received else "",
                 "sender": m.sender_masked,
-                "is_error": bool(hit),
+                "is_error": j["is_error"],
                 # 어떤 키워드에 걸렸는지 남긴다. 오탐 원인을 여기서 찾는다.
-                "matched": hit,
+                "matched": j["matched"],
                 # 머리말(RE:/FW:)을 떼고서야 걸린 사본인가
-                "via_prefix": via_prefix,
-                "keys": [k["key"] for k in keys],
+                "via_prefix": j["via_prefix"],
+                # 무엇이 오류로 봤는가(rule | llm | rule+llm)와 LLM 의 근거
+                "judged_by": j["judged_by"],
+                "llm_reason": (j["llm"] or {}).get("reason", ""),
+                "conflict": j["conflict"],
+                "keys": [k["key"] for k in j["keys"]],
             }
         )
 
@@ -749,7 +977,7 @@ def list_mails(hours: int | None = None, detail: Detail = "full") -> dict[str, A
         "mail_count": len(state.get("mails") or []),
         "error_count": sum(1 for r in rows if r["is_error"]),
         "mails": rows,
-        "warnings": state.get("warnings") or [],
+        "warnings": (state.get("warnings") or []) + judge_warnings,
     }
 
 
@@ -781,6 +1009,14 @@ def doctor(hours: int | None = None) -> list[tuple[str, bool, str]]:
             + ("" if not problems else " — " + "; ".join(problems)),
         )
     )
+
+    # 1-2. LLM 판정을 쓰면 모델이 살아 있는지. 죽어 있으면 키워드로만 돌아간다
+    #      — 동작은 하지만 LLM 이 메우던 빈틈이 다시 생긴다.
+    if llm_judge_enabled():
+        from core.llm import check_ollama
+
+        ok, msg = check_ollama(JUDGE_MODEL)
+        steps.append(("LLM 메일 판정", ok, msg + ("" if ok else "  → 키워드로만 판정된다")))
 
     # 2. 메일 읽기
     mails = list_mails(hours=hours)
@@ -989,7 +1225,11 @@ if __name__ == "__main__":
 
         print(f"메일 {r['mail_count']}통 (오류로 분류 {r['error_count']}통)")
         print(
-            f"오류 판정: [{MAIL_SUBJECT_MATCH}] "
+            "판정 방식: "
+            + (f"LLM ({JUDGE_MODEL}) + 키워드 안전망" if llm_judge_enabled() else "키워드만")
+        )
+        print(
+            f"오류 키워드: [{MAIL_SUBJECT_MATCH}] "
             f"{', '.join(MAIL_SUBJECT_KEYWORDS) or '(없음)'}"
         )
         print(
@@ -999,10 +1239,13 @@ if __name__ == "__main__":
         for problem in check_subject_rule():
             print(f"  [설정 확인] {problem}")
         print()
-        print(f"{'오류':<5}{'수신시각':<18}{'걸린키워드':<16}{'키':<22}제목")
-        print("─" * 100)
+        print(f"{'오류':<5}{'판정':<10}{'수신시각':<18}{'걸린키워드':<16}{'키':<22}제목")
+        print("─" * 110)
         for m in r["mails"]:
             mark = "  O  " if m["is_error"] else "  .  "
+            # 누가 오류로 봤는가. '!' 는 키워드와 LLM 이 갈린 건 — 사람이 볼 것.
+            by = (m.get("judged_by") or "rule") if m["is_error"] else "-"
+            by = (by + "!") if m.get("conflict") else by
             keys = ", ".join(m["keys"]) or ("-" if not m["is_error"] else "못찾음")
             # 걸린 키워드를 함께 보여 준다. 엉뚱한 메일이 O 로 찍히면
             # 여기를 보고 바로 원인을 안다(예: 한 글자짜리 '오').
@@ -1013,9 +1256,11 @@ if __name__ == "__main__":
                 hit += "(전달)"      # 원본이 아니라 사본임을 표시
             hit = hit if len(hit) <= 14 else hit[:13] + "…"
             print(
-                f"{mark}{m['received'][:16]:<18}{hit:<16}"
+                f"{mark}{by:<10}{m['received'][:16]:<18}{hit:<16}"
                 f"{keys:<22}{m['subject'][:40]}"
             )
+            if m.get("llm_reason") and (m["is_error"] or m.get("conflict")):
+                print(f"{'':<15}└ LLM: {m['llm_reason'][:80]}")
         for w in r["warnings"]:
             print(f"\n[확인 필요] {w}")
 
@@ -1032,8 +1277,10 @@ if __name__ == "__main__":
             except MailUnavailable as e:
                 print(f"[메일을 읽지 못했다] {e}")
                 raise SystemExit(1)
-            for mail in mails:
-                if saved >= args.dump or not is_error_mail(mail):
+            # 표와 같은 판정으로 고른다. 표에서 O 인데 저장이 안 되면 헷갈린다.
+            judged, _ = judge_mails(mails)
+            for mail in (j["mail"] for j in judged if j["is_error"]):
+                if saved >= args.dump:
                     continue
                 path = out_dir / f"mail_{saved + 1}.txt"
                 path.write_text(
