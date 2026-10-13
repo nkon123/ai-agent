@@ -16,15 +16,19 @@ from . import mcp, register, report_while
     view="text",
     detail_uri="impact://detail/{root}/{table}",
     hint=(
-        "analyze_table_impact 는 테이블이 소스 어디에서 어떻게 쓰이는지 조사할 때 "
-        "쓴다. 인터페이스 오류로 어떤 테이블에 데이터가 안 들어왔을 때, 그 테이블을 "
-        "쓰는 프로그램이 무엇인지 확인하는 용도다. table 에는 테이블 이름만 넣어라. "
+        "analyze_table_impact 는 테이블에 관한 질문에 쓴다 — 테이블이 어디서 쓰이는지, "
+        "테이블 영향도, 테이블을 쓰는 프로그램, 테이블에 데이터가 안 들어오면 무엇이 "
+        "문제인지. 변수·함수 사용처는 find_usage 다. "
+        "table 에는 테이블 이름만 넣어라. "
         "쓰기(write)가 있는 프로그램이 먼저 영향을 받는다."
     ),
+    # 예시마다 '테이블'을 넣는다. 이름만으로는 테이블인지 변수인지 모델이
+    # 가르지 못한다. 이름 없는 "이 테이블 영향도 조사해줘" 는 어떤 툴도 고르지
+    # 못해(실측) 뺐다.
     examples=(
-        "IF_ORDER_TMP 이 테이블 어디서 쓰여?",
-        "이 테이블 영향도 조사해줘",
-        "IF_ORDER_TMP 에 데이터 안 들어오면 뭐가 문제 생겨?",
+        "IF_ORDER_TMP 테이블 영향도 조사해줘",
+        "IF_ORDER_TMP 테이블 어디서 쓰여?",
+        "IF_ORDER_TMP 테이블에 데이터 안 들어오면 뭐가 문제 생겨?",
     ),
     read_only=True,
     tier="combo",
@@ -32,7 +36,7 @@ from . import mcp, register, report_while
 async def analyze_table_impact(
     table: str, root: str = "", ctx: Context = None
 ) -> str:
-    """테이블이 소스 어디에서 읽히고 쓰이는지 조사한다.
+    """테이블이 소스 어디에서 읽히고 쓰이는지(테이블 영향도) 조사한다.
 
     테이블 이름이 나온 줄이 속한 SQL 문장을 통째로 잘라내 읽기/쓰기를
     판정한다. 인터페이스 실패로 그 테이블이 비었을 때 무엇이 영향을

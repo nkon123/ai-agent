@@ -21,22 +21,29 @@ from . import mcp, register
     # {root} 와 {name} 두 값을 받는 리소스. 화면은
     # /api/resource?template=...&root=SAMPLE&name=TOTAL_AMT 로 읽어 간다.
     detail_uri="usage://detail/{root}/{name}",
+    # 테이블은 이 툴의 몫이 아니다. 예전에는 설명에 '테이블'이 들어 있고 예시가
+    # "이 테이블 쓰는 소스 찾아줘" 여서, 테이블 영향도를 물어도 모델이 이 툴을
+    # 골랐다(실사용 제보, qwen3.5:4b 실측). 테이블은 analyze_table_impact 가
+    # SQL 문장 단위로 읽기·쓰기까지 판정한다.
     hint=(
-        "find_usage 는 소스에서 변수·함수·테이블 같은 식별자가 쓰인 곳을 "
-        "찾을 때만 쓴다. name 에는 식별자만 넣어라(문장을 넣지 마라). "
+        "find_usage 는 소스에서 변수·컬럼·함수 이름이 쓰인 줄을 찾을 때만 쓴다. "
+        "테이블에 관한 질문(테이블이 어디서 쓰이는지, 테이블 영향도, 테이블을 쓰는 "
+        "프로그램)에는 쓰지 말고 analyze_table_impact 를 써라. "
+        "name 에는 식별자만 넣어라(문장을 넣지 마라). "
         "결과의 used 가 unknown 이면 '없다'가 아니라 '확인하지 못했다'는 뜻이니 "
         "그대로 사용자에게 전달하라."
     ),
     examples=(
-        "TOTAL_AMT 어디서 쓰여?",
-        "이 테이블 쓰는 소스 찾아줘",
+        "TOTAL_AMT 변수 어디서 쓰여?",
+        "calc_total 함수 쓰는 곳 찾아줘",
     ),
     read_only=True,
     tier="combo",
 )
 def find_usage(name: str, root: str = "") -> str:
-    """소스 트리에서 식별자가 실제로 쓰인 곳을 찾는다.
+    """소스 트리에서 변수·컬럼·함수 이름이 실제로 쓰인 곳을 찾는다.
 
+    테이블은 이 툴이 아니라 analyze_table_impact 가 조사한다.
     주석과 문자열 안의 언급은 사용처로 세지 않는다.
     name 에는 찾을 식별자 이름을, root 에는 소스 루트 라벨(생략 가능)을 넣는다.
     """
