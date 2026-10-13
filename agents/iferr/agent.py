@@ -789,10 +789,23 @@ def _master_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def system_table(system: str, table: str) -> str:
+    """'[ERP] TB_ORDER'. 시스템은 괄호로, 테이블 이름에 점으로 붙이지 않는다.
+
+    'ERP.TB_ORDER' 로 보이면 모델이 그 문자열을 테이블 이름으로 옮겨 적어
+    영향도 조사가 'ERP.EMP.TB_ORDER' 를 찾았다(마스터 값에 스키마가 붙어 있으면
+    더 길어진다). 시스템은 테이블 이름의 일부가 아니다.
+    """
+    system, table = (system or "").strip(), (table or "").strip()
+    if system and table:
+        return f"[{system}] {table}"
+    return table or (f"[{system}]" if system else "")
+
+
 def _flow_text(m: dict[str, Any]) -> str:
     """'출발 → 도착 (스케줄)'을 한 줄로. 영향 범위를 바로 읽을 수 있게."""
-    src = ".".join(x for x in (m.get("src_sys"), m.get("src_table")) if x)
-    tar = ".".join(x for x in (m.get("tar_sys"), m.get("tar_table")) if x)
+    src = system_table(m.get("src_sys", ""), m.get("src_table", ""))
+    tar = system_table(m.get("tar_sys", ""), m.get("tar_table", ""))
     flow = f"{src} → {tar}" if src and tar else (src or tar or "경로 정보 없음")
     sched = m.get("schedule")
     return f"{flow} ({sched})" if sched else flow
@@ -1198,7 +1211,7 @@ if __name__ == "__main__":
         print(f"{t['key']}: {t['status']} (근거 {t['rule'] or '-'})")
         for row in t["tables"]:
             role = "출발" if row["role"] == "source" else "도착"
-            print(f"  [{role}] {'.'.join(x for x in (row['system'], row['table']) if x)}"
+            print(f"  {role}: {system_table(row['system'], row['table'])}"
                   f"  (IFID {row['interface']})")
         for w in t["warnings"]:
             print(f"  [확인 필요] {w}")

@@ -340,3 +340,58 @@ def test_structured_retry_note_is_kept(monkeypatch: Any):
         "warnings": [],
     })
     assert any("사고 과정을 껐다" in w for w in out["warnings"])
+
+
+# --------------------------------------------------------------------------
+# 시스템·스키마가 붙은 테이블 이름
+#
+# 실사용 제보: 인터페이스 마스터의 값('EMP.TB_ORDER')과 화면의 '시스템.테이블'
+# 표기가 겹쳐 '시스템명.EMP.TB_ORDER' 로 조사했고, 소스의 FROM TB_ORDER 와
+# 맞지 않아 사용처를 못 찾았다.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw, bare, qualifier",
+    [
+        ("ERP.EMP.TB_ORDER", "TB_ORDER", "ERP.EMP"),
+        ("EMP.TB_ORDER", "TB_ORDER", "EMP"),
+        ('"EMP"."TB_ORDER"@ERP_LINK', "TB_ORDER", "EMP"),
+        ("  TB_ORDER  ", "TB_ORDER", ""),
+    ],
+)
+def test_bare_table_name(raw: str, bare: str, qualifier: str):
+    from core.sqlstmt import bare_table_name
+
+    assert bare_table_name(raw) == (bare, qualifier)
+
+
+@pytest.mark.parametrize(
+    "sql, role, rule",
+    [
+        ("INSERT INTO EMP.TB_ORDER (A) VALUES (1)", "write", "insert-into"),
+        ('UPDATE "EMP"."TB_ORDER" SET A = 1', "write", "update-target"),
+        ("DELETE FROM ${schema}.TB_ORDER WHERE A = 1", "write", "delete-from"),
+        ("SELECT A FROM EMP.TB_ORDER@ERP_LINK", "read", "from"),
+        ("SELECT A FROM X JOIN #{owner}.TB_ORDER B ON 1 = 1", "read", "join"),
+    ],
+)
+def test_classify_sees_through_schema_prefix(sql: str, role: str, rule: str):
+    """스키마가 붙어 있어도 쓰기는 쓰기다. 못 보면 '판정불가'로 떨어진다."""
+    info = classify(sql, "TB_ORDER")
+    assert (info.role, info.rule) == (role, rule)
+
+
+def test_schema_prefix_does_not_widen_to_similar_names():
+    """TB_ORDER 를 찾는데 EMP.TB_ORDER_HIST 에 쓰는 문장은 쓰기가 아니다."""
+    info = classify("INSERT INTO EMP.TB_ORDER_HIST (A) VALUES (1)", "TB_ORDER")
+    assert info.role != "write"
+
+
+def test_impact_with_system_and_schema_prefix_finds_same_places():
+    plain = run_impact("IF_ORDER_TMP", root="SAMPLE", detail="summary")
+    prefixed = run_impact("ERP.EMP.IF_ORDER_TMP", root="SAMPLE", detail="summary")
+    assert prefixed["table"] == "IF_ORDER_TMP"
+    assert prefixed["places"] == plain["places"] and plain["places"]
+    # 무엇을 떼고 찾았는지 남긴다.
+    assert "ERP.EMP" in prefixed["note"] and plain["note"] == ""

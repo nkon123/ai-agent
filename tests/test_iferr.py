@@ -821,7 +821,7 @@ def test_master_row_becomes_impact_text(monkeypatch: Any):
     c = run_iferr(key="ABCIF0001234", detail="full")["cases"][0]
 
     assert c["db"]["status"] == "found" and c["rule"] == "rows-found"
-    assert "SAP.ZORDER → ERP.IF_ORDER_TMP" in c["impact"]
+    assert "[SAP] ZORDER → [ERP] IF_ORDER_TMP" in c["impact"]
     assert c["flows"][0]["tar_table"] == "IF_ORDER_TMP"
 
 
@@ -860,7 +860,7 @@ def test_master_field_names_are_configurable(monkeypatch: Any):
         },
     )
     c = run_iferr(key="X1", detail="full")["cases"][0]
-    assert "MES.T1 → ERP.T2" in c["impact"]
+    assert "[MES] T1 → [ERP] T2" in c["impact"]
 
 
 def test_summary_carries_flows(monkeypatch: Any):
@@ -872,7 +872,7 @@ def test_summary_carries_flows(monkeypatch: Any):
     )
     s = run_iferr(key="X1", detail="summary")["cases"][0]
     assert s["flows"][0]["src_sys"] == "SAP"
-    assert "SAP.A → ERP.B" in s["impact"]
+    assert "[SAP] A → [ERP] B" in s["impact"]
 
 
 def test_schema_prefix_is_validated(monkeypatch: Any):
@@ -949,7 +949,7 @@ def test_multiple_schedule_rows_group_into_one_interface(monkeypatch: Any):
     assert len(c["flows"]) == 1                    # 3행 → 1건
     assert c["flows"][0]["rows"] == 3              # 원 행 수는 남긴다
     assert c["flows"][0]["schedule"] == "매일 08:30, 12:00, 18:00"
-    assert "SAP.ZORDER → ERP.IF_ORD (매일 08:30, 12:00, 18:00)" in c["impact"]
+    assert "[SAP] ZORDER → [ERP] IF_ORD (매일 08:30, 12:00, 18:00)" in c["impact"]
 
 
 def test_different_ifids_stay_separate(monkeypatch: Any):
@@ -1161,7 +1161,7 @@ def test_mcp_find_interface_tables(monkeypatch: Any):
     tools, result = _run(_with_client(call))
     assert tools["find_interface_tables"].annotations.read_only_hint is True
     text = result.content[0].text
-    assert "[출발] SAP.ZORDER" in text and "[도착] ERP.IF_ORD" in text
+    assert "출발: [SAP] ZORDER" in text and "도착: [ERP] IF_ORD" in text
     # 다음 질문(영향도)으로 이어지게 도착 테이블을 짚어 준다.
     assert "IF_ORD 테이블 영향도 조사해줘" in text
 

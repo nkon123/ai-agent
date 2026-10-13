@@ -42,6 +42,8 @@ async def analyze_table_impact(
     # 문장 판정은 하나에 수십 초라 진행 상황을 중계한다.
     r = await report_while(ctx, lambda: run_impact(table, root=root, detail="summary"))
 
+    # 시스템·스키마가 붙어 왔으면 에이전트가 이름만 남겼다. 답에도 그 이름을 쓴다.
+    table = r.get("table") or table
     if r["rule"] == "unknown-root":
         return f"{table}: 소스 루트를 찾지 못했다 — " + "; ".join(r["warnings"])
     if not r["write_count"] and not r["read_count"] and not r["unknown_count"]:
@@ -60,6 +62,8 @@ async def analyze_table_impact(
         )
         for place in r["places"]:
             line += f"\n  - {place}"
+    if r.get("note"):
+        line += f"\n참고: {r['note']}"
     if r.get("warnings"):
         line += "\n확인 필요: " + "; ".join(r["warnings"])
     return line

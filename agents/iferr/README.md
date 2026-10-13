@@ -17,8 +17,8 @@ python agents\iferr\agent.py --tables EAIIF0001234
 ```
 ```
 EAIIF0001234: found (근거 rows-found)
-  [출발] SAP.ZORDER  (IFID EAIIF0001234)
-  [도착] ERP.IF_ORD  (IFID EAIIF0001234)
+  출발: [SAP] ZORDER  (IFID EAIIF0001234)
+  도착: [ERP] IF_ORD  (IFID EAIIF0001234)
 ```
 
 챗봇에서는 "EAIIF0001234 인터페이스가 참조하는 테이블 알려줘" 처럼 묻는다.
@@ -88,7 +88,7 @@ python agents\iferr\agent.py --doctor --hours 72
   OK    메일 읽기          38통 중 오류 4통
   OK    키 추출           2개: EAIIF0001234, EAIIF0009999
   OK    DB 접속           접속 OK (dsn=..., 접속계정=ERP_READ, 모드=thick, ...)
-  OK    마스터 조회         EAIIF0001234: found — SAP.ZORDER → ERP.IF_ORD (매일 08:30, 12:00)
+  OK    마스터 조회         EAIIF0001234: found — [SAP] ZORDER → [ERP] IF_ORD (매일 08:30, 12:00)
 
 전부 정상 — python app/app.py 로 챗봇을 띄워도 된다
 ```
@@ -313,7 +313,7 @@ EAIIF0001234  SAP     ...  *        12     0        →  1건으로 묶임
 EAIIF0001234  SAP     ...  *        18     0
 ```
 ```
-EAIIF0001234: found — SAP.ZORDER_OUT → ERP.IF_ORDER_TMP (매일 08:30, 12:00, 18:00)
+EAIIF0001234: found — [SAP] ZORDER_OUT → [ERP] IF_ORDER_TMP (매일 08:30, 12:00, 18:00)
 ```
 
 | 원본 | 표시 |
@@ -332,7 +332,7 @@ EAIIF0001234: found — SAP.ZORDER_OUT → ERP.IF_ORDER_TMP (매일 08:30, 12:00
 않았다는 뜻이므로, 이 경로가 영향 범위다.
 
 ```
-EAIIF0001234: found — SAP.ZORDER_OUT → ERP.IF_ORDER_TMP / header 1건
+EAIIF0001234: found — [SAP] ZORDER_OUT → [ERP] IF_ORDER_TMP / header 1건
 ```
 
 이름은 SQL 문자열에 들어가므로(바인드로 넘길 수 없다) `^[A-Za-z][A-Za-z0-9_$#]{0,29}$`

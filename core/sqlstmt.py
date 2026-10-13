@@ -166,12 +166,39 @@ class StmtInfo:
     evidence: str    # 판단 근거가 된 실제 조각
 
 
+def bare_table_name(raw: str) -> tuple[str, str]:
+    """'ERP.EMP.TB_ORDER' → ('TB_ORDER', 'ERP.EMP'). 앞에 붙은 것을 뗀다.
+
+    테이블 이름은 여러 곳에서 수식어가 붙어 들어온다 — 인터페이스 마스터의
+    값이 'EMP.TB_ORDER'(스키마)이거나, 화면에 '시스템.테이블'로 보인 것을
+    모델이 그대로 옮겨 적는다. 그 문자열을 통째로 소스에서 찾으면 FROM TB_ORDER
+    도 FROM EMP.TB_ORDER 도 맞지 않아 '사용처 없음'이 된다. 실제로 그랬다.
+
+    이름만으로 찾으면 스키마가 붙은 사용처도 함께 잡힌다(식별자 경계에 '.' 은
+    들어가지 않는다). 같은 이름의 다른 스키마 테이블까지 걸릴 수 있지만,
+    통째로 놓치는 것보다 낫다. 떼어 낸 앞부분은 돌려줘 결과에 남긴다.
+    @DB링크와 따옴표도 뗀다.
+    """
+    s = (raw or "").strip().split("@", 1)[0]
+    parts = [p.strip().strip('"`[]') for p in s.split(".")]
+    parts = [p for p in parts if p]
+    if not parts:
+        return (raw or "").strip(), ""
+    return parts[-1], ".".join(parts[:-1])
+
+
+# 테이블 앞에 붙을 수 있는 수식어: EMP. / "EMP". / ${schema}. / #{schema}. (최대 2단)
+# 이게 없으면 INSERT INTO EMP.TB_ORDER 를 쓰기로 못 보고 '판정불가'로 떨어진다.
+_QUALIFIER = r'(?:(?:"?[A-Za-z0-9_$#]+"?|[$#]\{[^}]*\})\.){0,2}'
+
+
 def classify(sql: str, table: str, lang: str = "sql") -> StmtInfo:
     """문장이 그 테이블을 읽는지 쓰는지 판정한다.
 
     '어디에 나왔는가'로 정한다. INSERT INTO T / UPDATE T / DELETE FROM T /
     MERGE INTO T 면 쓰기, FROM·JOIN 뒤면 읽기다. 같은 문장에 여러 번
     나오면 쓰기를 우선한다 — 영향도 조사에서 쓰기가 더 중요하다.
+    T 앞에 스키마가 붙어 있어도(INSERT INTO EMP.T) 같은 판정을 한다.
     """
     try:
         body = strip_comments(sql, lang, mask_strings=False)
@@ -183,7 +210,7 @@ def classify(sql: str, table: str, lang: str = "sql") -> StmtInfo:
         # <if test="...">, <isNotEmpty> 같은 동적 태그도 함께 사라진다.
         body = re.sub(r"<[^>]*>", " ", body)
     flat = " ".join(body.split())          # 줄바꿈을 없애야 구절이 이어진다
-    t = re.escape(table)
+    t = _QUALIFIER + '"?' + re.escape(bare_table_name(table)[0]) + '"?'
 
     kind_m = _STMT_START.search(flat)
     kind = kind_m.group(1).lower() if kind_m else "unknown"
@@ -216,7 +243,7 @@ def classify(sql: str, table: str, lang: str = "sql") -> StmtInfo:
     # 이름은 있는데 역할을 못 정했다. '아니다'가 아니라 '모른다'로 남긴다.
     # 위의 read/write 패턴이 (?i) 인 것과 맞춘다 — 여기만 대소문자를
     # 가리면 같은 문장이 규칙에 따라 다르게 판정된다.
-    hit = ident_pattern(table, re.IGNORECASE).search(flat)
+    hit = ident_pattern(bare_table_name(table)[0], re.IGNORECASE).search(flat)
     return StmtInfo(
         kind=kind,
         role="unknown",

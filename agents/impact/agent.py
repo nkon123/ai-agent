@@ -33,7 +33,7 @@ from agents.usage.agent import LANG_BY_SUFFIX, scan_files  # noqa: E402
 from config import IMPACT_MAX_STATEMENTS, SOURCE_ROOTS, USE_LLM  # noqa: E402
 from core.cache import cached  # noqa: E402
 from core.progress import notify  # noqa: E402
-from core.sqlstmt import classify, masks_strings, statement_at  # noqa: E402
+from core.sqlstmt import bare_table_name, classify, masks_strings, statement_at  # noqa: E402
 from core.text import ident_pattern, read_text_with_encoding, strip_comments  # noqa: E402
 
 Detail = Literal["full", "summary", "minimal"]
@@ -261,6 +261,10 @@ def run_impact(
 
     full 을 챗봇 툴에서 돌려주면 SQL 수십 개가 매 턴 컨텍스트를 먹는다.
     """
+    # 'ERP.EMP.TB_ORDER' 처럼 시스템·스키마가 붙어 오면 이름만으로 찾는다.
+    # 통째로 찾으면 소스의 FROM TB_ORDER 와 맞지 않아 '사용처 없음'이 된다.
+    requested = (table or "").strip()
+    table, qualifier = bare_table_name(requested)
     state: ImpactState = _graph().invoke({"table": table, "root_label": root})
     stmts = state.get("statements") or []
 
@@ -269,6 +273,15 @@ def run_impact(
     unknown = [s for s in stmts if s["role"] == "unknown"]
     base = {
         "table": table,
+        # 무엇을 떼고 찾았는지 남긴다. 조용히 바꾸면 '내가 준 이름으로 찾은 게
+        # 맞나'를 확인할 수 없다.
+        "requested": requested,
+        "note": (
+            f"'{requested}' 에서 앞의 '{qualifier}' 는 시스템·스키마로 보고 "
+            f"테이블 이름 '{table}' 로 찾았다(스키마가 붙은 사용처도 포함)"
+            if qualifier
+            else ""
+        ),
         "write_count": len(writes),
         "read_count": len(reads),
         "unknown_count": len(unknown),

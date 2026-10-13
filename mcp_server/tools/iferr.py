@@ -30,7 +30,8 @@ from mcp.server.mcpserver import Context
 from config import MAIL_LOOKBACK_HOURS
 
 from agents.iferr import extract_keys, interface_tables, list_mails, lookup_key, run_iferr
-from agents.iferr.agent import parse_period
+from agents.iferr.agent import parse_period, system_table
+from core.sqlstmt import bare_table_name
 
 from . import mcp, register
 
@@ -120,8 +121,10 @@ async def check_interface_errors(period: str = "", key: str = "", ctx: Context =
 
         # 다음 단계를 알려 준다. 소형 모델은 툴을 이어서 부르지 못하므로
         # 사용자가 다음 질문을 할 수 있도록 대상 테이블을 짚어 준다.
+        # 테이블 이름만 짚는다. 'EMP.TB_ORDER' 를 그대로 보여 주면 모델이 그 문자열로
+        # 영향도를 물어 엉뚱한 것을 찾는다.
         targets = [
-            f["tar_table"]
+            bare_table_name(f["tar_table"])[0]
             for c in r["cases"]
             for f in (c.get("flows") or [])
             if f.get("tar_table")
@@ -198,12 +201,12 @@ def find_interface_tables(key: str) -> str:
         role = {"source": "출발", "target": "도착"}
         lines = [f"{k} 인터페이스가 참조하는 테이블 {len(r['tables'])}개"]
         for t in r["tables"]:
-            where = ".".join(x for x in (t["system"], t["table"]) if x)
+            where = system_table(t["system"], t["table"])
             other = f" (IFID {t['interface']})" if t["interface"].upper() != k.upper() else ""
-            lines.append(f"- [{role[t['role']]}] {where}{other}")
+            lines.append(f"- {role[t['role']]}: {where}{other}")
         for f in r["flows"][:3]:
-            src = ".".join(x for x in (f.get("src_sys"), f.get("src_table")) if x)
-            tar = ".".join(x for x in (f.get("tar_sys"), f.get("tar_table")) if x)
+            src = system_table(f.get("src_sys", ""), f.get("src_table", ""))
+            tar = system_table(f.get("tar_sys", ""), f.get("tar_table", ""))
             if src or tar:
                 lines.append(f"경로: {src or '?'} → {tar or '?'}"
                              + (f" ({f['schedule']})" if f.get("schedule") else ""))
@@ -211,7 +214,8 @@ def find_interface_tables(key: str) -> str:
         # 도착 테이블(안 채워지면 영향을 받는 쪽)을 짚어 준다.
         # 예시 문구는 실측으로 골랐다(qwen3.5:4b): "X 어디서 쓰여?" 는
         # find_usage 로 가고, "X 테이블 영향도 조사해줘" 는 영향도 툴로 간다.
-        targets = [t["table"] for t in r["tables"] if t["role"] == "target"]
+        # 스키마가 붙어 있어도('EMP.TB_ORDER') 다음 질문에는 이름만 쓴다.
+        targets = [bare_table_name(t["table"])[0] for t in r["tables"] if t["role"] == "target"]
         if targets:
             lines.append(
                 "이 테이블을 쓰는 프로그램은 analyze_table_impact 로 확인할 수 있다 "
