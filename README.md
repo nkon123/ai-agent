@@ -158,6 +158,7 @@ tests/              core/ + MCP 회귀 테스트
 | 툴 | 등급 | 무엇 |
 |---|---|---|
 | `check_interface_errors` | combo | 오류 메일 → 키 → DB → 영향까지 한 번에 |
+| `find_interface_tables` | combo | IFID 하나 → 참조 테이블(출발·도착)·경로 (메일 안 읽음) |
 | `analyze_table_impact` | combo | 테이블을 쓰는 SQL 문장 찾기 |
 | `tune_query` | combo | SQL 진단 + 인덱스 제안 (실행 안 함) |
 | `find_usage` | combo | 소스에서 식별자 사용처 찾기 |

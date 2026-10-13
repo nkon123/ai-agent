@@ -5,6 +5,7 @@
 툴 구성 (같은 함수를 재사용하므로 어느 쪽으로 불러도 결과가 같다):
 
     combo  check_interface_errors   메일 → 키 → DB → 영향까지 한 번에
+    combo  find_interface_tables    IFID 하나 → 참조 테이블(출발·도착) (메일 안 읽음)
     step   list_error_mails         메일만 (DB 안 붙음)
     step   extract_interface_keys   텍스트 → 키 (메일도 DB 도 안 붙음)
     step   lookup_interface         키 하나만 DB 확인 (메일 안 읽음)
@@ -28,7 +29,7 @@ from mcp.server.mcpserver import Context
 
 from config import MAIL_LOOKBACK_HOURS
 
-from agents.iferr import extract_keys, list_mails, lookup_key, run_iferr
+from agents.iferr import extract_keys, interface_tables, list_mails, lookup_key, run_iferr
 from agents.iferr.agent import parse_period
 
 from . import mcp, register
@@ -157,6 +158,69 @@ async def check_interface_errors(period: str = "", key: str = "", ctx: Context =
 def iferr_detail(key: str) -> str:
     """화면 표시용 전체 데이터. LLM 컨텍스트를 거치지 않는다."""
     return json.dumps(run_iferr(key=key, detail="full"), ensure_ascii=False, default=str)
+
+
+@register(
+    label="인터페이스 테이블 확인 (iferr)",
+    view="text",
+    hint=(
+        "find_interface_tables 는 인터페이스 ID(IFID)를 주고 그 인터페이스가 참조하는 "
+        "테이블(출발·도착)을 물을 때만 쓴다. "
+        "테이블 이름을 주고 '어디서 쓰여?', '영향도', '데이터 안 들어오면 뭐가 문제' 를 "
+        "물으면 이 툴이 아니라 analyze_table_impact 다. 오류·실패 여부는 "
+        "check_interface_errors 다. key 에는 사용자가 말한 ID 를 그대로 넣어라. "
+        "status 가 unknown 이면 '테이블 없음'이 아니라 '확인하지 못했다'는 뜻이다."
+    ),
+    examples=(
+        f"{_SAMPLE_KEY} 인터페이스가 참조하는 테이블 알려줘",
+        f"{_SAMPLE_KEY} 인터페이스 테이블 확인해줘",
+    ),
+    read_only=True,
+    tier="combo",
+)
+def find_interface_tables(key: str) -> str:
+    """인터페이스 ID 가 어떤 테이블을 읽고 어디에 넣는지(출발·도착 테이블) 확인한다.
+
+    '이 인터페이스가 참조하는 테이블' 같은 질문에만 쓴다. 메일은 읽지 않고
+    인터페이스 마스터만 조회한다. 테이블에 데이터가 안 들어올 때의 영향이나
+    테이블을 쓰는 프로그램은 이 툴이 아니라 analyze_table_impact 가 답한다.
+    key 에는 사용자가 말한 인터페이스 ID 를 그대로 넣는다.
+    """
+    r = interface_tables(key)
+    k = r["key"] or key
+    if r["status"] == "unknown":
+        line = f"{k}: 확인 불가 — 테이블을 확인하지 못했다(없다는 뜻이 아니다)"
+    elif r["status"] == "missing":
+        line = f"{k}: 인터페이스 마스터에 없는 ID 다. 철자를 확인할 것"
+    elif not r["tables"]:
+        line = f"{k}: 마스터에 행은 있지만 테이블 이름이 비어 있다"
+    else:
+        role = {"source": "출발", "target": "도착"}
+        lines = [f"{k} 인터페이스가 참조하는 테이블 {len(r['tables'])}개"]
+        for t in r["tables"]:
+            where = ".".join(x for x in (t["system"], t["table"]) if x)
+            other = f" (IFID {t['interface']})" if t["interface"].upper() != k.upper() else ""
+            lines.append(f"- [{role[t['role']]}] {where}{other}")
+        for f in r["flows"][:3]:
+            src = ".".join(x for x in (f.get("src_sys"), f.get("src_table")) if x)
+            tar = ".".join(x for x in (f.get("tar_sys"), f.get("tar_table")) if x)
+            if src or tar:
+                lines.append(f"경로: {src or '?'} → {tar or '?'}"
+                             + (f" ({f['schedule']})" if f.get("schedule") else ""))
+        # 소형 모델은 툴을 이어 부르지 못한다. 다음 질문을 사용자가 할 수 있게
+        # 도착 테이블(안 채워지면 영향을 받는 쪽)을 짚어 준다.
+        # 예시 문구는 실측으로 골랐다(qwen3.5:4b): "X 어디서 쓰여?" 는
+        # find_usage 로 가고, "X 테이블 영향도 조사해줘" 는 영향도 툴로 간다.
+        targets = [t["table"] for t in r["tables"] if t["role"] == "target"]
+        if targets:
+            lines.append(
+                "이 테이블을 쓰는 프로그램은 analyze_table_impact 로 확인할 수 있다 "
+                f"(예: \"{targets[0]} 테이블 영향도 조사해줘\")"
+            )
+        line = "\n".join(lines)
+    if r["warnings"]:
+        line += "\n확인 필요: " + "; ".join(r["warnings"])
+    return line
 
 
 # --------------------------------------------------------------------------

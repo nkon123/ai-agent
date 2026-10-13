@@ -3,6 +3,7 @@
 from .agent import (
     check_subject_rule,
     extract_keys,
+    interface_tables,
     list_mails,
     lookup_key,
     match_info,
@@ -15,6 +16,7 @@ __all__ = [
     "extract_keys",
     "list_mails",
     "lookup_key",
+    "interface_tables",
     "matched_keyword",
     "match_info",
     "check_subject_rule",
