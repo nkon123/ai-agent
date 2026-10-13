@@ -1096,3 +1096,79 @@ def test_tool_warns_on_unparsed_period():
 
     text = _run(_with_client(call)).content[0].text
     assert "이해하지 못해" in text
+
+
+# --------------------------------------------------------------------------
+# IFID → 참조 테이블 (find_interface_tables)
+# --------------------------------------------------------------------------
+
+
+def _master_row(ifid: str, src: str, tar: str, h: str = "8") -> dict[str, Any]:
+    return {"IFID": ifid, "SRCSYS": "SAP", "TARSYS": "ERP", "SRCTNAME": src,
+            "TARTNAME": tar, "SCH_DAY": "*", "SCH_H": h, "SCH_M": "30"}
+
+
+def test_interface_tables_lists_source_and_target(monkeypatch: Any):
+    _fake_master(monkeypatch, [_master_row("X1", "ZORDER", "IF_ORD"),
+                               _master_row("X1", "ZORDER", "IF_ORD", h="12")])
+    monkeypatch.setattr(iferr, "IFERR_MASTER_FIELDS", _master_fields_with_schedule())
+    r = iferr.interface_tables("X1")
+    assert r["status"] == "found"
+    # 스케줄 행이 여러 개여도 테이블은 한 번씩만.
+    assert [(t["role"], t["system"], t["table"]) for t in r["tables"]] == [
+        ("source", "SAP", "ZORDER"), ("target", "ERP", "IF_ORD"),
+    ]
+
+
+def test_interface_tables_does_not_read_mail_or_call_llm(monkeypatch: Any):
+    """마스터 한 번이면 끝나는 질문이다. 메일도 요약용 LLM 도 부르지 않는다."""
+    _fake_master(monkeypatch, [_master_row("X1", "ZORDER", "IF_ORD")])
+
+    def boom(*a: Any, **k: Any) -> Any:
+        raise AssertionError("부르면 안 된다")
+
+    monkeypatch.setattr(iferr, "read_mails", boom)
+    monkeypatch.setattr(iferr, "explain", boom)
+    assert iferr.interface_tables("X1")["tables"]
+
+
+def test_interface_tables_unknown_is_not_empty(monkeypatch: Any):
+    """DB 설정이 없으면 '테이블 없음'이 아니라 '확인 불가'다."""
+    r = iferr.interface_tables("X1")
+    assert r["status"] == "unknown" and r["tables"] == []
+    assert r["warnings"]
+
+
+def test_interface_tables_missing_id(monkeypatch: Any):
+    _fake_master(monkeypatch, [])
+    assert iferr.interface_tables("NOPE")["status"] == "missing"
+
+
+def test_interface_tables_rows_without_table_names_warn(monkeypatch: Any):
+    _fake_master(monkeypatch, [_master_row("X1", "", "")])
+    r = iferr.interface_tables("X1")
+    assert r["status"] == "found" and r["tables"] == []
+    assert any("src_table / tar_table" in w for w in r["warnings"])
+
+
+def test_mcp_find_interface_tables(monkeypatch: Any):
+    _fake_master(monkeypatch, [_master_row("X1", "ZORDER", "IF_ORD")])
+
+    async def call(c: Client) -> Any:
+        tools = {t.name: t for t in (await c.list_tools()).tools}
+        return tools, await c.call_tool("find_interface_tables", {"key": "X1"})
+
+    tools, result = _run(_with_client(call))
+    assert tools["find_interface_tables"].annotations.read_only_hint is True
+    text = result.content[0].text
+    assert "[출발] SAP.ZORDER" in text and "[도착] ERP.IF_ORD" in text
+    # 다음 질문(영향도)으로 이어지게 도착 테이블을 짚어 준다.
+    assert "IF_ORD 테이블 영향도 조사해줘" in text
+
+
+def test_mcp_find_interface_tables_says_unknown():
+    async def call(c: Client) -> Any:
+        return await c.call_tool("find_interface_tables", {"key": "X1"})
+
+    text = _run(_with_client(call)).content[0].text
+    assert "확인 불가" in text and "없다는 뜻이 아니다" in text

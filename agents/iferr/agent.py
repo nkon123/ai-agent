@@ -990,6 +990,55 @@ def lookup_key(key: str, detail: Detail = "full") -> dict[str, Any]:
     return run_iferr(key=key, detail=detail)
 
 
+def interface_tables(key: str) -> dict[str, Any]:
+    """IFID 하나가 참조하는 테이블 — 마스터의 출발·도착 테이블. 메일은 읽지 않는다.
+
+    "이 인터페이스가 어떤 테이블을 쓰나"만 물을 때 쓴다. 오류 확인과 달리
+    요약용 LLM 을 부르지 않는다 — 마스터 한 번 조회로 끝나는 질문에 수십 초를
+    쓸 이유가 없다. 조회·판정은 통합 경로와 같은 노드(find_keys → lookup →
+    assess)를 그대로 써서 두 툴의 답이 어긋나지 않는다.
+
+    돌려주는 것:
+        status   found | missing | unknown  — '없다'와 '확인 못 했다'를 구분한다
+        tables   [{table, role(source|target), system, interface}]  중복 제거
+        flows    마스터 경로(출발 → 도착, 스케줄)
+    """
+    key = (key or "").strip()
+    if not key:
+        return {"key": "", "status": "unknown", "rule": "no-key", "tables": [],
+                "flows": [], "warnings": ["IFID 가 비어 있다"]}
+
+    state: IfErrState = {"only_key": key}
+    for node in (find_keys, lookup, assess):
+        state = {**state, **node(state)}
+    case = (state.get("cases") or [{}])[0]
+    status = (case.get("db") or {}).get("status", "unknown")
+    flows = case.get("flows") or []
+
+    tables: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for f in flows:
+        for role, sys_key, table_key in (
+            ("source", "src_sys", "src_table"), ("target", "tar_sys", "tar_table"),
+        ):
+            table = (f.get(table_key) or "").strip()
+            if not table or (role, table.upper()) in seen:
+                continue
+            seen.add((role, table.upper()))
+            tables.append({"table": table, "role": role,
+                           "system": f.get(sys_key) or "", "interface": f.get("id") or key})
+
+    warnings = list(state.get("warnings") or [])
+    if status == "found" and not tables:
+        # 행은 있는데 테이블을 못 뽑았다 — '테이블 없음'으로 보이면 안 된다.
+        warnings.append(
+            "마스터에 행은 있지만 테이블 이름을 찾지 못했다 — 확인 필요 "
+            "(IFERR_MASTER_FIELDS 의 src_table / tar_table 매핑)"
+        )
+    return {"key": key, "status": status, "rule": case.get("rule", ""),
+            "tables": tables, "flows": flows, "warnings": warnings}
+
+
 def doctor(hours: int | None = None) -> list[tuple[str, bool, str]]:
     """설정부터 DB 조회까지 순서대로 점검한다. [(단계, 성공, 메시지)]
 
@@ -1086,6 +1135,8 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="인터페이스 오류 메일 확인")
     ap.add_argument("--hours", type=int, default=None, help="몇 시간 전까지 볼지")
     ap.add_argument("--key", default="", help="메일을 읽지 않고 이 키만 확인")
+    ap.add_argument("--tables", default="", metavar="IFID",
+                    help="이 IFID 가 참조하는 테이블(출발·도착)만 본다. 메일을 읽지 않는다")
     ap.add_argument("--detail", choices=["full", "summary", "minimal"], default="full")
     # 아래 셋은 진단용이다. DB 를 건드리지 않는다.
     ap.add_argument("--folders", action="store_true",
@@ -1141,6 +1192,17 @@ if __name__ == "__main__":
         else:
             print("전부 정상 — python app/app.py 로 챗봇을 띄워도 된다")
         raise SystemExit(1 if failed else 0)
+
+    if args.tables:
+        t = interface_tables(args.tables)
+        print(f"{t['key']}: {t['status']} (근거 {t['rule'] or '-'})")
+        for row in t["tables"]:
+            role = "출발" if row["role"] == "source" else "도착"
+            print(f"  [{role}] {'.'.join(x for x in (row['system'], row['table']) if x)}"
+                  f"  (IFID {row['interface']})")
+        for w in t["warnings"]:
+            print(f"  [확인 필요] {w}")
+        raise SystemExit(0 if t["status"] == "found" and t["tables"] else 1)
 
     if args.check_db:
         from core.oracle import check_connection

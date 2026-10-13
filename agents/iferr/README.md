@@ -7,6 +7,25 @@
 메일 수집 → 오류 판정·키 추출 (LLM + 키워드 안전망) → DB 조회 → 영향 판정 → (선택) LLM 요약
 ```
 
+## IFID 가 참조하는 테이블 — `find_interface_tables`
+
+오류 여부와 상관없이 "이 인터페이스가 어떤 테이블을 쓰나"만 물을 때 쓴다.
+인터페이스 마스터만 조회하고 메일·요약용 LLM 은 부르지 않는다.
+
+```bat
+python agents\iferr\agent.py --tables EAIIF0001234
+```
+```
+EAIIF0001234: found (근거 rows-found)
+  [출발] SAP.ZORDER  (IFID EAIIF0001234)
+  [도착] ERP.IF_ORD  (IFID EAIIF0001234)
+```
+
+챗봇에서는 "EAIIF0001234 인터페이스가 참조하는 테이블 알려줘" 처럼 묻는다.
+답 끝에 도착 테이블로 영향도를 이어 물을 문장("IF_ORD 테이블 영향도 조사해줘")을
+짚어 준다 — 소형 모델은 툴을 이어 부르지 못한다. `status` 가 `unknown` 이면
+'테이블 없음'이 아니라 '확인 못 함'이다(DB·마스터 설정 확인).
+
 ## 오류 메일 판정 — LLM 이 읽고, 키워드가 받친다
 
 기본(`IFERR_MAIL_JUDGE = "llm"`)은 LLM 이 메일마다 **오류 알림인가**와
