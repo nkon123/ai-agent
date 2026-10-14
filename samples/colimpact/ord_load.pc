@@ -1,0 +1,16 @@
+/* 컬럼 영향도 평가용 가짜 Pro*C. TOTAL_AMT 는 주석에도 나온다. */
+#include <stdio.h>
+
+long TOTAL_AMT;
+
+void load(void)
+{
+    EXEC SQL
+        SELECT TOTAL_AMT
+          INTO :amt
+          FROM IF_ORDER_TMP
+         WHERE ORD_NO = :ord_no;
+
+    TOTAL_AMT = amt;
+    printf("TOTAL_AMT=%ld\n", TOTAL_AMT);
+}

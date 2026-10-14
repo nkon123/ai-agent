@@ -92,7 +92,10 @@ def register(
     """MCP 툴로 등록하는 데코레이터.
 
     label       : 화면에 보일 이름 (MCP title 로도 나간다)
-    view        : 프론트 렌더링 힌트 ("text" | "table" | "json")
+    view        : 프론트 렌더링 힌트 ("text" | "table" | "json" | "grid").
+                  "grid" 면 화면이 답 아래에 [표로 보기] 를 붙이고 detail_uri 를
+                  읽는다. 리소스는 {title, subtitle, grid:{columns, rows,
+                  filter_key, tones}, warnings} 모양으로 준다.
     detail_uri  : 전체 데이터를 담은 MCP 리소스 URI 템플릿.
                   툴은 컨텍스트를 아끼려고 요약만 돌려주므로, 화면용
                   전체 데이터는 리소스로 따로 읽는다(LLM 컨텍스트 밖).

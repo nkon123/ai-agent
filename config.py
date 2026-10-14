@@ -313,6 +313,14 @@ IFERR_STATUS_COLUMNS: tuple[str, ...] = tuple(
 # 툴 타임아웃을 넘긴다. 규칙 기반 판정은 전부 하고 LLM 재확인만 줄인다.
 IMPACT_MAX_STATEMENTS: int = _env_int("IMPACT_MAX_STATEMENTS", 3)
 
+# 컬럼 영향도(analyze_column_impact): LLM 으로 판정할 줄 수 상한.
+# 줄마다 따로 판정한다(같은 문장 안에서도 줄마다 답이 다르다). 사고 과정을 끈
+# 4B 모델로 줄당 1~3초라 40줄이면 1~2분이다(툴 타임아웃 MCP_TOOL_TIMEOUT_SEC 안쪽).
+# 넘는 줄은 'LLM 미확인'으로 남긴다 — 버리지 않는다.
+COLUMN_IMPACT_MAX_LLM: int = _env_int("COLUMN_IMPACT_MAX_LLM", 40)
+# 그리드에 담을 최대 줄 수. 흔한 컬럼(STATUS 등)은 수천 줄이 나온다.
+COLUMN_IMPACT_MAX_HITS: int = _env_int("COLUMN_IMPACT_MAX_HITS", 2000)
+
 # 한 번에 조회할 최대 행 수. 로컬 LLM 이 붙은 요청 하나가 수만 행을
 # 끌어오면 챗봇이 통째로 멎는다.
 IFERR_MAX_ROWS: int = _env_int("IFERR_MAX_ROWS", 200)

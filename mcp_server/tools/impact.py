@@ -7,6 +7,7 @@ import json
 from mcp.server.mcpserver import Context
 
 from agents.impact import run_impact
+from agents.impact.column import column_grid, run_column_impact
 
 from . import mcp, register, report_while
 
@@ -20,6 +21,7 @@ from . import mcp, register, report_while
         "테이블 영향도, 테이블을 쓰는 프로그램, 테이블에 데이터가 안 들어오면 무엇이 "
         "문제인지. 변수·함수 사용처는 find_usage 다. "
         "테이블과 연결된 인터페이스(I/F, IFID)는 find_table_interfaces 다. "
+        "테이블의 특정 컬럼 영향도는 analyze_column_impact 다. "
         "table 에는 테이블 이름만 넣어라. "
         "쓰기(write)가 있는 프로그램이 먼저 영향을 받는다."
     ),
@@ -86,3 +88,74 @@ def impact_detail(root: str, table: str) -> str:
     return json.dumps(
         run_impact(table, root=root, detail="full"), ensure_ascii=False, default=str
     )
+
+
+@register(
+    label="컬럼 영향도 조사 (impact)",
+    # 화면은 view="grid" 인 툴의 답 아래에 [표로 보기] 를 붙이고 detail_uri 를 읽는다.
+    view="grid",
+    detail_uri="impact://column/{table}/{column}/{root}",
+    hint=(
+        "analyze_column_impact 는 테이블의 특정 컬럼이 어디서 쓰이는지(컬럼 영향도)를 물을 때 "
+        "쓴다. table 에는 테이블 이름, column 에는 컬럼 이름만 따로 넣어라. "
+        "컬럼 없이 테이블만 물으면 analyze_table_impact 다. "
+        "답의 '확인 필요' 건수는 '영향 없음'이 아니다. 전체 목록은 답 아래 [표로 보기] 에 있다고 "
+        "사용자에게 알려라."
+    ),
+    examples=(
+        "IF_ORDER_TMP 테이블 TOTAL_AMT 컬럼 영향도 조사해줘",
+        "IF_ORDER_TMP 테이블의 STATUS 컬럼 어디서 쓰여?",
+    ),
+    read_only=True,
+    tier="combo",
+)
+async def analyze_column_impact(
+    table: str, column: str, root: str = "", ctx: Context = None
+) -> str:
+    """테이블의 컬럼 하나가 소스 어디에서 실제로 쓰이는지(컬럼 영향도) 조사한다.
+
+    테이블을 쓰는 파일에서 컬럼 이름이 나온 줄을 모두 찾고, 줄마다 그 테이블의
+    컬럼으로 쓰였는지(영향 있음/없음/확인 필요)를 판정한다.
+    table 과 column 은 따로 넣는다.
+    """
+    r = await report_while(
+        ctx, lambda: run_column_impact(table, column, root=root, detail="summary")
+    )
+    name = f"{r['table']}.{r['column']}" if r["table"] and r["column"] else f"{table}.{column}"
+    c = r["counts"]
+    if r["rule"] in ("empty-name", "unknown-root", "no-files"):
+        line = f"{name}: 확인 불가 — 조사하지 못했다(없다는 뜻이 아니다)"
+    elif r["rule"] == "no-table-hit":
+        line = (f"{name}: {r['root']} 소스({r['files_scanned']}개 파일)에서 테이블 {r['table']} 을 "
+                "쓰는 파일을 찾지 못했다")
+    elif r["rule"] == "no-column-hit":
+        line = (f"{name}: 테이블을 쓰는 파일 {r['table_files']}개에서 컬럼 {r['column']} 이 "
+                "나오지 않았다")
+    else:
+        line = (f"{name} 컬럼 영향도 ({r['root']}, 테이블을 쓰는 파일 {r['table_files']}개에서 "
+                f"{r['hit_count']}줄 찾음): 영향 있음 {c['yes']} / 확인 필요 {c['unknown']} / "
+                f"영향 없음 {c['no']}")
+        for p in r["places"]:
+            line += f"\n  - {p}"
+        if c["yes"] > len(r["places"]):
+            line += f"\n  - 외 {c['yes'] - len(r['places'])}줄"
+        if r["unknown_places"]:
+            line += "\n확인 필요 위치: " + ", ".join(r["unknown_places"])
+        line += "\n전체 목록(프로그램·줄·판정 근거)은 답 아래 [표로 보기] 에서 볼 수 있다"
+    if r.get("qualifier"):
+        line += f"\n참고: 앞의 '{r['qualifier']}' 는 떼고 테이블 {r['table']} 로 찾았다"
+    if r.get("warnings"):
+        line += "\n확인 필요: " + "; ".join(r["warnings"])
+    return line
+
+
+@mcp.resource(
+    "impact://column/{table}/{column}/{root}",
+    name="impact_column_grid",
+    title="컬럼 영향도 그리드",
+    description="찾은 줄 전부와 판정(그리드용 머리·행). root 가 '-' 면 기본 루트.",
+    mime_type="application/json",
+)
+def impact_column_grid(table: str, column: str, root: str) -> str:
+    """화면 그리드용. 툴과 같은 캐시를 쓰므로 방금 조사한 것은 바로 나온다."""
+    return json.dumps(column_grid(table, column, root), ensure_ascii=False, default=str)

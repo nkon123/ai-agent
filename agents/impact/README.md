@@ -131,12 +131,81 @@ AGENT_REASONING=true python agents/impact/agent.py IF_ORDER_TMP
 비용 때문에 앞쪽 `IMPACT_MAX_STATEMENTS`(기본 8)건만 본다. 로컬 모델은
 문장 하나에 수 초가 걸려 수십 건을 돌리면 챗봇이 멎은 것처럼 보인다.
 
+## 컬럼 영향도 — `analyze_column_impact` (`column.py`)
+
+테이블 영향도에서 한 단계 더 들어가 **"그 프로그램에서 이 컬럼을 쓰나"** 를 본다.
+
+```
+테이블이 나오는 파일 → 그 파일에서 컬럼이 나온 줄 전부
+→ 규칙 1차 분류(주석 / 문자열 / 테이블과 같은 문장 / 다른 코드)
+→ 줄마다 LLM 판정 → 그리드
+```
+
+```bash
+python agents/impact/column.py IF_ORDER_TMP TOTAL_AMT --root SAMPLE
+USE_LLM=false python agents/impact/column.py IF_ORDER_TMP TOTAL_AMT   # 규칙만
+```
+
+- **찾은 줄은 판정과 상관없이 전부 남긴다.** 어느 프로그램에서 이름이 나왔는지는 사람이
+  다 봐야 하고, 실제 영향 여부만 판정으로 가른다. 주석에만 테이블이 나오는 파일은 뺀다.
+- 판정은 `영향 있음` / `영향 없음` / `확인 필요` 세 값이다. 판정 불가·LLM 미확인·LLM 실패는
+  `확인 필요`다 — '아니다'로 처리하지 않는다.
+- 주석은 규칙만으로 `영향 없음`. 나머지는 **줄마다** LLM 이 본다. 같은 문장이라도 줄마다
+  답이 다르다:
+  ```sql
+  INSERT INTO ORD_HDR (ORD_NO, TOTAL_AMT)   -- ORD_HDR 의 컬럼 → 영향 없음
+  SELECT T.ORD_NO, T.TOTAL_AMT               -- IF_ORDER_TMP 의 컬럼 → 영향 있음
+    FROM IF_ORDER_TMP T
+  ```
+- **LLM 에게 yes/no 를 묻지 않는다.** "이 이름이 무엇인가(column/variable/text)" 와
+  "어느 테이블의 컬럼인가" 를 묻고, 테이블 이름 비교는 코드가 한다. yes/no 를 바로 물으면
+  근거에는 'ORD_HDR 의 컬럼'이라 쓰고 답은 yes 를 냈다(아래 실측 13/18 → 18/18).
+- 여기서는 **LLM 판정이 최종**이다(테이블 영향도와 반대). 같은 이름 컬럼이 여러 테이블에
+  흔해 규칙으로는 가를 수 없다. 대신 규칙 추정을 그리드에 함께 남기고, 갈리면 `≠ LLM` 을 붙인다.
+- 테이블과 같은 문장부터 판정한다. `COLUMN_IMPACT_MAX_LLM`(기본 40줄)을 넘는 줄은 버리지
+  않고 '규칙 추정 + 확인 필요'로 남긴다. 그리드는 `COLUMN_IMPACT_MAX_HITS`(기본 2000줄)까지.
+- 결과는 30분 캐시한다 — 챗봇 답 뒤에 [표로 보기] 를 누르면 같은 조사를 다시 하지 않는다.
+  **LLM 이 실패한 결과는 캐시하지 않는다**(Ollama 가 잠깐 죽은 결과가 30분 남으면 안 된다).
+  처음부터 연달아 두 번 실패하면 연결 문제로 보고 나머지를 기다리지 않는다.
+- 아직 못 하는 것: MyBatis `resultMap` 의 `totalAmt` 처럼 이름이 바뀐 매핑, `SELECT *`.
+  이름이 그대로 나온 줄만 찾는다.
+
+실측 (`qwen3.5:4b`, 사고 끔, `samples/colimpact` + `samples/src` 18줄, 2회):
+
+| 묻는 방식 | 정확도 | 시간 |
+|---|---|---|
+| 문장째 묶어 yes/no | 같은 문장의 줄이 같은 답 — 설계 결함 | |
+| 줄마다 yes/no | 13/18 (근거와 답이 어긋남) | 10초 |
+| 줄마다 '어느 테이블의 컬럼인가' → 코드가 비교 | **18/18, 18/18** | 9초 |
+
+### 화면 — [표로 보기]
+
+`view="grid"` 로 등록한 툴의 답 아래에 **[표로 보기]** 가 붙는다. 누르면 팝업 그리드가 뜨고
+`detail_uri` 리소스(`impact://column/{table}/{column}/{root}`)를 읽는다. 모델이 넣지 않은
+인자(`root`)는 `-` 로 채우고 리소스가 기본 루트로 본다.
+
+- 판정별 걸러 보기, 검색
+- **엑셀에 붙여넣기용 복사** — 탭 구분. 엑셀에 그대로 붙는다. `http://서버이름:포트` 로
+  접속하면 브라우저가 클립보드 API 를 막으므로 예전 방식으로 떨어진다
+- **CSV 저장** — 엑셀에서 한글이 안 깨지게 BOM 을 붙인다
+- 복사·저장은 지금 걸러 보고 있는 줄만 담는다
+
+리소스는 `{title, subtitle, grid: {columns, rows, filter_key, tones}, warnings}` 를 준다.
+화면은 어떤 툴인지 모르고 이 모양만 그린다 — 다른 툴도 같은 모양을 주면 그리드가 붙는다.
+
 ## MCP
 
 | 툴 | 등급 | 무엇 |
 |---|---|---|
 | `analyze_table_impact(table, root)` | combo | 읽기/쓰기 건수와 위치 |
+| `analyze_column_impact(table, column, root)` | combo | 컬럼이 나온 줄과 판정 요약 |
 | 리소스 `impact://detail/{root}/{table}` | | SQL 전문과 판정 근거 |
+| 리소스 `impact://column/{table}/{column}/{root}` | | 컬럼 영향도 그리드 (root 가 `-` 면 기본 루트) |
+
+툴 선택 실측(`qwen3.5:4b`, 2회씩 26/26): "X 테이블 Y 컬럼 영향도 조사해줘",
+"X 테이블의 Y 컬럼 어디서 쓰여?", "X.Y 컬럼 쓰는 프로그램 찾아줘",
+"X 테이블 Y 컬럼 바꾸면 영향 있는 곳" 은 이 툴로, 테이블만 묻는 질문·변수 사용처·
+인터페이스 질문은 원래 툴로 갔다.
 
 `check_interface_errors` 결과에 타겟 테이블이 있으면 이 툴을 쓰라는 안내가
 붙는다. 소형 모델은 툴을 이어서 부르지 못하므로 사용자가 다음 질문을 할 수
