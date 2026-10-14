@@ -146,5 +146,9 @@ samples\demo\run_demo.bat
 | 인터페이스 마스터(가짜) | `samples/demo/if_master.json` → `IFERR_MASTER_FILE` |
 | 소스 루트 두 개 | `samples/colimpact`(ERP), `samples/src`(SAMPLE) |
 
+발표 중에 조사를 기다리지 않으려면 미리 한 번 물어 둔다. 답과 [표로 보기] 는 저장되므로(브라우저 대화 기록 +
+`out/grid_snapshots/`) 발표 때는 왼쪽 대화 목록에서 그 대화를 열어 바로 보여 줄 수 있다 — 앱을 다시 띄워도 된다.
+소스 보기(줄 더블클릭)는 저장본이 아니라 소스 파일을 그때 읽으므로 그대로 동작한다.
+
 `config_local.py` 는 건드리지 않는다. 사내 PC 에서 실제 메일·DB 로 보이려면 배치 파일 없이
 평소처럼 `python app/app.py` 를 띄우면 된다(마스터는 DB, 메일은 Outlook).

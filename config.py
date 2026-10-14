@@ -453,6 +453,11 @@ HOST: str = _env_str("HOST", "127.0.0.1")
 PORT: int = _env_int("PORT", 5000)
 DEBUG: bool = _env_bool("DEBUG", False)
 
+# [표로 보기] 저장본 — 답할 때의 그리드를 파일로 남겨, 앱을 다시 띄운 뒤에도 지난 대화에서
+# 그때 결과를 연다(서버 캐시는 메모리에 30분뿐이다). out/ 은 git 에서 빠져 있다.
+GRID_SNAPSHOT_DIR: str = _env_str("GRID_SNAPSHOT_DIR", "./out/grid_snapshots")
+GRID_SNAPSHOT_DAYS: int = _env_int("GRID_SNAPSHOT_DAYS", 30)
+
 
 # --------------------------------------------------------------------------
 # config_local.py 덮어쓰기

@@ -210,3 +210,7 @@ IFERR_MASTER_FIELDS = {
 # SQLTUNE_PARALLEL_COUNT = False     # 건수 병렬 (순간 부하가 후보 수만큼 커짐)
 # SQLTUNE_INTERLEAVE_RUNS = True     # 수행시간 교차 반복 (A,B,A,B)
 # SQLTUNE_PARALLEL_MAX = 4           # 동시 DB 세션 상한
+
+# [표로 보기] 저장본 — 답할 때의 그리드를 파일로 남겨 앱을 다시 띄운 뒤에도 지난 대화에서 연다.
+# GRID_SNAPSHOT_DIR = r".\out\grid_snapshots"
+# GRID_SNAPSHOT_DAYS = 30     # 이보다 오래된 저장본은 지운다

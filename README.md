@@ -148,6 +148,7 @@ mcp_server/         MCP 서버 (툴 계층)
 app/
   app.py            Flask 챗봇 = MCP 클라이언트 (툴 추가 시 수정하지 않는다)
   mcp_bridge.py     MCP 툴 → LangChain 툴 변환
+  snapshots.py      [표로 보기] 저장본 — 답할 때의 그리드를 out/grid_snapshots/ 에 남긴다
   templates/        채팅 UI
 prompts/            에이전트 생성용 프롬프트 템플릿
 tests/              core/ + MCP 회귀 테스트

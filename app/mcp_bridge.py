@@ -219,11 +219,13 @@ class MCPBridge:
 
     def read_resource(self, uri: str) -> str:
         """MCP 리소스를 읽는다. 화면용 전체 데이터 통로(LLM 컨텍스트 밖)."""
+        return self.run(self.aread_resource(uri), timeout=config.MCP_TOOL_TIMEOUT_SEC)
+
+    async def aread_resource(self, uri: str) -> str:
+        """브리지 루프 안(스트리밍 응답 코루틴)에서 쓰는 비동기 판. run() 을 부르면 같은 루프를 막는다."""
         if self._client is None:
             raise RuntimeError("MCP 클라이언트가 연결되어 있지 않다")
-        result = self.run(
-            self._client.read_resource(uri), timeout=config.MCP_TOOL_TIMEOUT_SEC
-        )
+        result = await self._client.read_resource(uri)
         parts = [getattr(c, "text", "") for c in result.contents]
         return "\n".join(p for p in parts if p)
 

@@ -294,6 +294,8 @@
   .gp-body td.wrap { min-width:220px; max-width:380px; }
   .gp-body td.nw { white-space:nowrap; }
   .gp-empty { padding:30px; text-align:center; color:var(--muted); }
+  .gp-warn.gp-saved { color:var(--ink-2); background:var(--accent-weak); border-color:var(--accent-line);
+                      display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
   .tone { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11.5px; font-weight:600;
           white-space:nowrap; background:var(--line-2); color:var(--ink-2); }
   .tone.bad { background:var(--err-bg); color:var(--err-ink); border:1px solid var(--err-line); }
@@ -640,7 +642,7 @@ function add(text, cls, calls, steps, total) {
       const b = el("button", "grid-btn");
       b.type = "button"; b.innerHTML = ICON.grid;
       b.appendChild(document.createTextNode("표로 보기"));
-      b.addEventListener("click", () => openGrid(spec, t.args || {}));
+      b.addEventListener("click", () => openGrid(spec, t.args || {}, t.snapshot));
       meta.appendChild(b);
     }
     const copy = el("button", "icon-btn");
@@ -824,7 +826,10 @@ function gridUrl(spec, args) {
   return "/api/resource?" + p.toString();
 }
 
-async function openGrid(spec, args) {
+// snap 은 답할 때 서버가 저장한 그리드의 id(app/snapshots.py). 있으면 저장본을 먼저 연다 —
+// 서버 캐시는 메모리에 30분뿐이라, 앱을 다시 띄운 뒤 다시 조사하면 "오늘" 이 '지금의 오늘' 이 되어
+// 그때와 다른 표·빈 표가 나왔다. 저장본이 없으면(보관 기간 지남·예전 대화) 예전처럼 다시 조사한다.
+async function openGrid(spec, args, snap) {
   gp.data = null; gp.filter = ""; gp.q = ""; gp.name = spec.label;
   $("gp-q").value = "";
   $("gp-title").textContent = spec.label;
@@ -833,10 +838,29 @@ async function openGrid(spec, args) {
   $("gp-body").innerHTML = '<div class="gp-empty"><span class="spin" style="display:inline-block"></span></div>';
   $("gridpop").classList.add("on");
   try {
-    const r = await fetch(gridUrl(spec, args));
-    const d = await r.json();
-    if (!r.ok || d.error || !d.grid) throw new Error(d.error || "표 데이터가 없다");
+    let r = null, d = null, note = "";
+    if (snap) {
+      r = await fetch("/api/snapshot/" + encodeURIComponent(snap));
+      d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.grid) { note = "저장본이 없어 다시 조사했다 — 답할 때와 결과가 다를 수 있다"; d = null; }
+    }
+    if (!d) {
+      r = await fetch(gridUrl(spec, args));
+      d = await r.json();
+      if (!r.ok || d.error || !d.grid) throw new Error(d.error || "표 데이터가 없다");
+    }
     gp.data = d;
+    if (d._saved_at) {
+      // 저장본이다 — 언제 결과인지 밝히고, 지금 상태로 다시 볼 길을 둔다.
+      const w = el("div", "gp-warn gp-saved", `답할 때(${d._saved_at.replace("T", " ")}) 저장한 결과다. `);
+      const again = el("button", "act", "지금 다시 조사");
+      again.type = "button";
+      again.addEventListener("click", () => openGrid(spec, args, null));
+      w.appendChild(again);
+      $("gp-warn").appendChild(w);
+    } else if (note) {
+      $("gp-warn").appendChild(el("div", "gp-warn", note));
+    }
     $("gp-title").textContent = d.title || spec.label;
     $("gp-sub").textContent = d.subtitle || "";
     if ((d.warnings || []).length) {

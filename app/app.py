@@ -16,6 +16,7 @@ MCP 스펙 리비전 2026-07-28. 툴은 전부 mcp_server/ 프로세스가 노�
     GET  /              채팅 UI
     GET  /api/tools     MCP tools/list 결과 + 프로토콜 정보
     GET  /api/resource  MCP resources/read 프록시 (화면용 전체 데이터)
+    GET  /api/snapshot/<id>  [표로 보기] 저장본 (답할 때의 그리드, app/snapshots.py)
     POST /api/chat      {"message": ..., "thread_id": ...}
 
 새 툴을 붙일 때 이 파일은 수정하지 않는다. mcp_server/tools/ 에 파일만 놓으면 된다.
@@ -43,6 +44,7 @@ import queue  # noqa: E402
 from flask import Flask, jsonify, render_template, request  # noqa: E402
 
 import config  # noqa: E402
+from app import snapshots  # noqa: E402
 from app.mcp_bridge import BRIDGE, PROGRESS_SINK, fill_uri  # noqa: E402
 
 BASE_SYSTEM_PROMPT = """너는 사내 개발자를 돕는 한국어 어시스턴트다.
@@ -205,6 +207,19 @@ def api_resource():
         return jsonify({"error": msg}), 502
 
 
+@app.get("/api/snapshot/<sid>")
+def api_snapshot(sid: str):
+    """[표로 보기] 저장본 — 답할 때 저장한 그리드. 없으면 404 (화면은 리소스를 다시 읽는다)."""
+    snap = snapshots.load(sid)
+    if snap is None:
+        return jsonify({"error": "저장본이 없다(보관 기간이 지났거나 다른 PC 의 대화다)"}), 404
+    # jsonify 는 키를 정렬한다 — tones 의 순서(영향 있음 → 확인 필요 → 영향 없음)가 거르기 버튼
+    # 순서라 정렬되면 버튼이 뒤섞인다. 저장한 그대로 내보낸다.
+    return app.response_class(
+        json.dumps({**snap["data"], "_saved_at": snap["saved_at"]}, ensure_ascii=False),
+        mimetype="application/json")
+
+
 @app.post("/api/chat/stream")
 def api_chat_stream():
     """진행 상황을 흘려보내며 답한다 (Server-Sent Events).
@@ -259,6 +274,13 @@ def api_chat_stream():
                 elif kind == "on_chain_end" and ev.get("name") == "LangGraph":
                     out = (ev.get("data") or {}).get("output") or {}
                     reply = _reply_of(out.get("messages", []) or [])
+            # [표로 보기] 를 붙일 툴이면 지금(서버 캐시에 결과가 있을 때) 그리드를 저장해 둔다.
+            # 앱을 다시 띄운 뒤에도 지난 대화에서 그때 결과를 연다.
+            if seen_tools:
+                await snapshots.snapshot_calls(
+                    seen_tools, {s["name"]: s for s in BRIDGE.specs()},
+                    lambda uri: asyncio.wait_for(BRIDGE.aread_resource(uri),
+                                                 timeout=config.MCP_TOOL_TIMEOUT_SEC))
             sink({
                 "type": "done",
                 "reply": reply,

@@ -225,6 +225,11 @@ USE_LLM=false python agents/impact/column.py IF_ORDER_TMP TOTAL_AMT   # 규칙�
   '경로:줄 복사'. Esc 는 소스 보기부터 닫는다. 리소스 `source://snippet/{root}/{line}/{context}/{path}`
   (`agents/usage` `source_snippet`)를 읽는다.
 
+- **저장본** — 답이 끝나자마자 그리드를 `out/grid_snapshots/` 에 저장하고(`app/snapshots.py`), 지난 대화의
+  [표로 보기] 는 저장본을 먼저 연다("답할 때(시각) 저장한 결과다" + **지금 다시 조사** 버튼). 서버 캐시는
+  메모리에 30분뿐이라, 앱을 다시 띄운 뒤에는 다시 조사했고 "오늘" 같은 기간은 '지금의 오늘' 이 되어
+  그때와 다른 표·빈 표가 나왔다(사용자 지적). 보관 `GRID_SNAPSHOT_DAYS`(30일). 저장본이 없으면 예전처럼 다시 조사.
+
 리소스는 `{title, subtitle, grid: {columns, rows, filter_key, tones, source}, warnings}` 를 준다.
 `source` 는 `{root_key, path_key, line_key, word | word_key}` — 행마다 소스 위치가 있는 표만 준다.
 경로는 **루트 기준 상대 경로**(`src_path`)다. 절대 경로를 화면·URL 에 싣지 않고, 서버가 설정의
