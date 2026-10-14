@@ -19,6 +19,7 @@ core/ 의 도구들이 왜 그렇게 생겼는지가 여기서 드러난다.
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from pathlib import Path
@@ -47,8 +48,8 @@ MAX_FILES = 3000
 class UsageState(TypedDict, total=False):
     name: str
     ignore_case: bool
-    root_label: str
-    root_path: str
+    root_label: str                # 'ERP, MES' — 결과에 찍는 이름
+    roots: list[tuple[str, str]]   # 실제로 찾는 루트 [(이름, 경로)]
     files_scanned: int
     unreadable: list[str]
     hits: list[dict[str, Any]]     # {file, line, text}
@@ -87,32 +88,80 @@ def scan_files(root_path: str) -> list[str]:
 
 
 # --------------------------------------------------------------------------
+# 소스 루트 — usage·impact·컬럼 영향도가 함께 쓴다
+# --------------------------------------------------------------------------
+
+
+def resolve_roots(label: str) -> tuple[list[tuple[str, str]], list[str]]:
+    """찾을 소스 루트 [(이름, 경로)] 와 경고.
+
+    비우거나 '-' 면 설정된 루트 **전부**다. 설정한 루트는 모두 검색 대상이다 —
+    예전에는 첫 번째 루트만 봐서 두 번째 루트에만 있는 사용처를 '없음'으로 답했다.
+    'ERP,MES' 처럼 여러 개를 줄 수 있고, 이름의 대소문자는 가리지 않는다.
+    """
+    label = (label or "").strip()
+    if label in ("", "-"):
+        if not SOURCE_ROOTS:
+            return [], ["설정된 소스 루트가 없다 — 확인 필요 (SOURCE_ROOTS)"]
+        return list(SOURCE_ROOTS.items()), []
+    by_upper = {k.upper(): k for k in SOURCE_ROOTS}
+    names = [x.strip() for x in label.split(",") if x.strip()]
+    unknown = [n for n in names if n.upper() not in by_upper]
+    if unknown:
+        return [], [f"'{', '.join(unknown)}' 은 설정에 없는 소스 루트다 — 확인 필요 "
+                    f"(설정된 루트: {', '.join(SOURCE_ROOTS)})"]
+    picked = list(dict.fromkeys(by_upper[n.upper()] for n in names))
+    return [(k, SOURCE_ROOTS[k]) for k in picked], []
+
+
+def roots_label(roots: list[tuple[str, str]]) -> str:
+    """결과에 찍을 루트 이름. 'ERP, MES'."""
+    return ", ".join(k for k, _ in roots)
+
+
+def scan_roots(roots: list[tuple[str, str]]) -> tuple[list[tuple[str, str]], list[str]]:
+    """루트들의 스캔 대상 [(루트 이름, 파일)] 과 경고.
+
+    루트마다 scan_files 를 따로 돈다(캐시도 루트별, 상한 MAX_FILES 도 루트별).
+    비어 있는 루트는 경고로 남긴다 — 나머지 루트에서 찾았다고 조용히 넘어가면
+    경로를 잘못 적은 루트를 영영 모른다. 루트가 겹치면 같은 파일을 한 번만 센다.
+    """
+    files: list[tuple[str, str]] = []
+    warnings: list[str] = []
+    seen: set[str] = set()
+    for label, path in roots:
+        found = scan_files(path)
+        if not found:
+            warnings.append(f"'{label}' ({path}) 아래에 스캔할 소스가 없다 — 확인 필요")
+            continue
+        if len(found) >= MAX_FILES:
+            warnings.append(f"'{label}' 은 파일이 {MAX_FILES}개를 넘어 앞부분만 봤다 — 확인 필요")
+        for f in found:
+            key = os.path.normcase(os.path.abspath(f))
+            if key not in seen:
+                seen.add(key)
+                files.append((label, f))
+    return files, warnings
+
+
+# --------------------------------------------------------------------------
 # 노드 1 — 루트 결정
 # --------------------------------------------------------------------------
 
 
 def resolve_root(state: UsageState) -> UsageState:
     """어느 소스 루트를 볼지 정한다. 설정은 config.SOURCE_ROOTS 뿐이다."""
-    label = (state.get("root_label") or "").strip()
-    if label:
-        if label not in SOURCE_ROOTS:
-            return {
-                "root_path": "",
-                "used": "unknown",
-                "decided_by": "fallback",
-                "rule": "unknown-root",
-                "evidence": label,
-                "warnings": [
-                    f"'{label}' 은 설정에 없는 소스 루트다 — 확인 필요 "
-                    f"(설정된 루트: {', '.join(SOURCE_ROOTS)})"
-                ],
-            }
-        return {"root_label": label, "root_path": SOURCE_ROOTS[label]}
-
-    # 라벨을 안 주면 첫 번째 루트. 여러 루트를 동시에 훑지 않는 이유는
-    # 요청 하나가 사내 소스 전체를 읽는 사고를 막기 위해서다.
-    first = next(iter(SOURCE_ROOTS.items()))
-    return {"root_label": first[0], "root_path": first[1]}
+    roots, warnings = resolve_roots(state.get("root_label") or "")
+    if not roots:
+        return {
+            "roots": [],
+            "used": "unknown",
+            "decided_by": "fallback",
+            "rule": "unknown-root",
+            "evidence": (state.get("root_label") or "").strip(),
+            "warnings": warnings,
+        }
+    return {"roots": roots, "root_label": roots_label(roots)}
 
 
 # --------------------------------------------------------------------------
@@ -122,7 +171,7 @@ def resolve_root(state: UsageState) -> UsageState:
 
 def search(state: UsageState) -> UsageState:
     """주석·문자열을 뺀 본문에서 식별자를 찾는다."""
-    if not state.get("root_path"):
+    if not state.get("roots"):
         return {}                      # resolve_root 가 이미 판정했다
 
     name = (state.get("name") or "").strip()
@@ -135,7 +184,9 @@ def search(state: UsageState) -> UsageState:
             "warnings": ["찾을 식별자가 비어 있다 — 확인 필요"],
         }
 
-    files = scan_files(state["root_path"])
+    rooted, root_warnings = scan_roots(state["roots"])
+    root_of = {f: label for label, f in rooted}
+    files = [f for _, f in rooted]
     # 기본은 대소문자를 가린다. 코드의 식별자는 TOTAL_AMT 와 total_amt 가
     # 서로 다른 것이기 때문이다(SQL 테이블 이름과 다르다).
     flags = re.IGNORECASE if state.get("ignore_case") else 0
@@ -164,22 +215,23 @@ def search(state: UsageState) -> UsageState:
             if pattern.search(line):
                 hits.append(
                     {
+                        "root": root_of[path],
                         "file": path,
                         "line": no,
                         "text": (original[no - 1] if no <= len(original) else line).strip(),
                     }
                 )
 
-    warnings = [f"읽지 못한 파일 {len(unreadable)}건 — 확인 필요"] if unreadable else []
+    warnings = root_warnings + (
+        [f"읽지 못한 파일 {len(unreadable)}건 — 확인 필요"] if unreadable else [])
 
     if not files:
         # '못 봤다'와 '없다'를 같은 이름으로 쓰지 않는다.
         return {
             "files_scanned": 0, "hits": [], "unreadable": unreadable,
             "used": "unknown", "decided_by": "fallback", "rule": "no-files",
-            "evidence": state["root_path"],
-            "warnings": warnings
-            + [f"'{state['root_path']}' 아래에 스캔할 소스가 없다 — 확인 필요"],
+            "evidence": state.get("root_label", ""),
+            "warnings": warnings,
         }
 
     if hits:
@@ -315,7 +367,7 @@ def run_usage(
     return {
         **base,
         "root": state.get("root_label"),
-        "root_path": state.get("root_path"),
+        "root_paths": dict(state.get("roots") or []),
         "hit_count": len(hits),
         "files_scanned": state.get("files_scanned", 0),
         "hits": hits,

@@ -44,6 +44,7 @@ async def analyze_table_impact(
     테이블 이름이 나온 줄이 속한 SQL 문장을 통째로 잘라내 읽기/쓰기를
     판정한다. 인터페이스 실패로 그 테이블이 비었을 때 무엇이 영향을
     받는지 가늠하는 데 쓴다.
+    root 는 사용자가 특정 소스 루트를 말했을 때만 넣는다 — 비우면 전부 찾는다.
     """
     # summary 인 이유: SQL 전문을 돌려주면 매 턴 컨텍스트를 먹는다.
     # 문장 판정은 하나에 수십 초라 진행 상황을 중계한다.
@@ -116,7 +117,8 @@ async def analyze_column_impact(
 
     테이블을 쓰는 파일에서 컬럼 이름이 나온 줄을 모두 찾고, 줄마다 그 테이블의
     컬럼으로 쓰였는지(영향 있음/없음/확인 필요)를 판정한다.
-    table 과 column 은 따로 넣는다.
+    table 과 column 은 따로 넣는다. root 는 사용자가 특정 소스 루트를 말했을
+    때만 넣는다 — 비우면 설정된 소스 루트 전부를 찾는다.
     """
     r = await report_while(
         ctx, lambda: run_column_impact(table, column, root=root, detail="summary")

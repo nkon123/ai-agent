@@ -31,7 +31,12 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from agents.usage.agent import LANG_BY_SUFFIX, scan_files  # noqa: E402
+from agents.usage.agent import (  # noqa: E402
+    LANG_BY_SUFFIX,
+    resolve_roots,
+    roots_label,
+    scan_roots,
+)
 from config import (  # noqa: E402
     COLUMN_IMPACT_MAX_HITS,
     COLUMN_IMPACT_MAX_LLM,
@@ -93,9 +98,14 @@ def _place(nocomment_line: str, masked_line: str, pat: re.Pattern[str]) -> str:
     return "comment"
 
 
-def find_hits(table: str, column: str, root_path: str) -> dict[str, Any]:
-    """테이블이 나오는 파일에서 컬럼이 나온 줄을 전부 찾아 규칙으로 분류한다."""
-    files = scan_files(root_path)
+def find_hits(table: str, column: str, roots: list[tuple[str, str]]) -> dict[str, Any]:
+    """테이블이 나오는 파일에서 컬럼이 나온 줄을 전부 찾아 규칙으로 분류한다.
+
+    roots 의 모든 루트를 본다. 줄마다 어느 루트에서 나왔는지 남긴다.
+    """
+    rooted, root_warnings = scan_roots(roots)
+    root_of = {f: label for label, f in rooted}
+    files = [f for _, f in rooted]
     tab_pat = ident_pattern(table, re.IGNORECASE)
     # SQL 식별자는 대소문자를 가리지 않는다(테이블 영향도와 같다).
     col_pat = ident_pattern(column, re.IGNORECASE)
@@ -136,7 +146,7 @@ def find_hits(table: str, column: str, root_path: str) -> dict[str, Any]:
             mk = mk_lines[no - 1] if no - 1 < len(mk_lines) else ""
             where = _place(nc, mk, col_pat)
             hit: dict[str, Any] = {
-                "file": path, "program": Path(path).name, "lang": lang, "line": no,
+                "root": root_of[path], "file": path, "program": Path(path).name, "lang": lang, "line": no,
                 "code": raw.strip()[:300], "start_line": no, "end_line": no,
                 "stmt_kind": "", "table_role": "", "sql": "",
             }
@@ -168,7 +178,7 @@ def find_hits(table: str, column: str, root_path: str) -> dict[str, Any]:
             break
 
     return {"files_scanned": len(files), "table_files": table_files, "hits": hits,
-            "unreadable": unreadable, "truncated": truncated}
+            "unreadable": unreadable, "truncated": truncated, "root_warnings": root_warnings}
 
 
 # --------------------------------------------------------------------------
@@ -307,20 +317,6 @@ def judge(table: str, column: str, hits: list[dict[str, Any]]) -> list[str]:
 # --------------------------------------------------------------------------
 
 
-def _resolve_root(label: str) -> tuple[str, str, str]:
-    """(루트 이름, 경로, 경고). 비우거나 '-' 면 첫 번째 루트."""
-    label = (label or "").strip()
-    if label in ("", "-"):
-        if not SOURCE_ROOTS:
-            return "", "", "설정된 소스 루트가 없다 — 확인 필요 (SOURCE_ROOTS)"
-        name, path = next(iter(SOURCE_ROOTS.items()))
-        return name, path, ""
-    if label not in SOURCE_ROOTS:
-        return label, "", (f"'{label}' 은 설정에 없는 소스 루트다 — 확인 필요 "
-                           f"(설정된 루트: {', '.join(SOURCE_ROOTS)})")
-    return label, SOURCE_ROOTS[label], ""
-
-
 # 툴 답(요약)과 그리드(리소스)가 같은 결과를 쓰게 한다. 챗봇 답이 나온 뒤
 # [표로 보기] 를 누르면 리소스가 같은 조사를 다시 부르는데, LLM 판정을 다시
 # 돌리면 수십 초를 또 기다린다.
@@ -342,7 +338,9 @@ def _analyze(table: str, column: str, root: str = "") -> dict[str, Any]:
 
 def _analyze_uncached(table: str, column: str, root: str = "") -> dict[str, Any]:
     tab, col, qualifier = split_names(table, column)
-    root_label, root_path, root_warn = _resolve_root(root)
+    # 비우거나 '-' 면 설정된 루트 전부(usage·테이블 영향도와 같은 resolve_roots).
+    roots, root_warn = resolve_roots(root)
+    root_label = roots_label(roots) or (root or "").strip()
     out: dict[str, Any] = {
         "table": tab, "column": col, "qualifier": qualifier, "root": root_label,
         "files_scanned": 0, "table_files": 0, "hits": [], "warnings": [],
@@ -350,13 +348,13 @@ def _analyze_uncached(table: str, column: str, root: str = "") -> dict[str, Any]
     }
     if not tab or not col:
         return {**out, "rule": "empty-name", "warnings": ["테이블과 컬럼 이름이 모두 필요하다"]}
-    if root_warn:
-        return {**out, "rule": "unknown-root", "warnings": [root_warn]}
+    if not roots:
+        return {**out, "rule": "unknown-root", "warnings": root_warn}
 
     notify(f"{root_label} 소스에서 {tab} 을(를) 쓰는 파일 찾는 중")
-    found = find_hits(tab, col, root_path)
+    found = find_hits(tab, col, roots)
     hits = found["hits"]
-    warnings: list[str] = []
+    warnings: list[str] = list(found["root_warnings"])
     if found["unreadable"]:
         warnings.append(f"읽지 못한 파일 {len(found['unreadable'])}건 — 확인 필요")
     if found["truncated"]:
@@ -367,10 +365,9 @@ def _analyze_uncached(table: str, column: str, root: str = "") -> dict[str, Any]
         warnings += judge(tab, col, hits)
 
     rank = {"yes": 0, "unknown": 1, "no": 2}
-    hits.sort(key=lambda h: (rank[h["verdict"]], h["file"], h["line"]))
+    hits.sort(key=lambda h: (rank[h["verdict"]], h["root"], h["file"], h["line"]))
     if not found["files_scanned"]:
-        rule = "no-files"
-        warnings.append(f"'{root_path}' 아래에 스캔할 소스가 없다 — 확인 필요")
+        rule = "no-files"            # 루트별 '소스가 없다' 경고는 scan_roots 가 이미 냈다
     elif not found["table_files"]:
         rule = "no-table-hit"
     elif not hits:
@@ -400,21 +397,26 @@ def run_column_impact(table: str, column: str, root: str = "",
     base["counts"] = counts_of(hits)
     base["programs"] = sorted({h["program"] for h in hits})
     if detail == "summary":
+        # 루트가 여럿이면 같은 파일 이름이 루트마다 있을 수 있다. 위치에 루트를 붙인다.
+        many = len({h["root"] for h in hits}) > 1
+
+        def where(h: dict[str, Any]) -> str:
+            return (f"[{h['root']}] " if many else "") + f"{h['program']}:{h['line']}"
+
         return {
             **base,
             "hit_count": len(hits),
             "places": [
-                f"{h['program']}:{h['line']} {USAGE_LABEL[h['usage']]} — {h['code'][:80]}"
+                f"{where(h)} {USAGE_LABEL[h['usage']]} — {h['code'][:80]}"
                 for h in hits if h["verdict"] == "yes"
             ][:10],
-            "unknown_places": [f"{h['program']}:{h['line']}" for h in hits
-                               if h["verdict"] == "unknown"][:5],
+            "unknown_places": [where(h) for h in hits if h["verdict"] == "unknown"][:5],
         }
     return {**base, "hits": hits}
 
 
 GRID_COLUMNS = [
-    ("verdict", "판정"), ("program", "프로그램"), ("line", "줄"), ("usage", "용도"),
+    ("verdict", "판정"), ("root", "루트"), ("program", "프로그램"), ("line", "줄"), ("usage", "용도"),
     ("place", "위치"), ("stmt", "문장"), ("code", "코드"), ("reason", "근거"),
     ("decided_by", "판정 주체"), ("rule_verdict", "규칙 추정"), ("file", "경로"),
 ]
@@ -426,6 +428,7 @@ def column_grid(table: str, column: str, root: str = "") -> dict[str, Any]:
     rows = [
         {
             "verdict": VERDICT_LABEL[h["verdict"]],
+            "root": h["root"],
             "program": h["program"],
             "line": h["line"],
             "usage": USAGE_LABEL[h["usage"]],
@@ -461,7 +464,8 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="컬럼 영향도 조사")
     ap.add_argument("table")
     ap.add_argument("column")
-    ap.add_argument("--root", default="", help=f"소스 루트 ({', '.join(SOURCE_ROOTS)})")
+    ap.add_argument("--root", default="",
+                    help=f"소스 루트 ({', '.join(SOURCE_ROOTS)}). 비우면 전부, 쉼표로 여러 개")
     args = ap.parse_args()
 
     g = column_grid(args.table, args.column, args.root)

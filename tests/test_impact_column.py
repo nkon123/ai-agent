@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from mcp.client.client import Client  # noqa: E402
 
 from agents.impact import column  # noqa: E402
+from agents.usage import agent as usage_agent  # noqa: E402
 from mcp_server.tools import build_server  # noqa: E402
 
 EVAL = str(Path(__file__).resolve().parents[1] / "samples" / "colimpact")
@@ -32,7 +33,7 @@ EVAL = str(Path(__file__).resolve().parents[1] / "samples" / "colimpact")
 def rules_only(monkeypatch: Any) -> None:
     """기본은 규칙만. 결과 캐시는 테스트마다 비운다(앞 테스트의 결과가 새지 않게)."""
     monkeypatch.setattr(column, "USE_LLM", False)
-    monkeypatch.setattr(column, "SOURCE_ROOTS", {"EVAL": EVAL})
+    monkeypatch.setattr(usage_agent, "SOURCE_ROOTS", {"EVAL": EVAL})
     column._RESULTS.clear()
 
 
@@ -137,7 +138,7 @@ def test_string_only_hit_in_proc_is_unknown(tmp_path: Path, monkeypatch: Any):
     (tmp_path / "a.pc").write_text(
         'void f(void) {\n  EXEC SQL DELETE FROM IF_ORDER_TMP;\n'
         '  printf("TOTAL_AMT 오류");\n}\n', encoding="utf-8")
-    monkeypatch.setattr(column, "SOURCE_ROOTS", {"T": str(tmp_path)})
+    monkeypatch.setattr(usage_agent, "SOURCE_ROOTS", {"T": str(tmp_path)})
     h = column.run_column_impact("IF_ORDER_TMP", "TOTAL_AMT", "T")["hits"][0]
     assert h["place"] == "string" and h["verdict"] == "unknown"
 
@@ -145,9 +146,27 @@ def test_string_only_hit_in_proc_is_unknown(tmp_path: Path, monkeypatch: Any):
 def test_file_mentioning_table_only_in_comment_is_skipped(tmp_path: Path, monkeypatch: Any):
     (tmp_path / "a.sql").write_text(
         "-- IF_ORDER_TMP 에서 옮겨 온다\nUPDATE ORD_HDR SET TOTAL_AMT = 0;\n", encoding="utf-8")
-    monkeypatch.setattr(column, "SOURCE_ROOTS", {"T": str(tmp_path)})
+    monkeypatch.setattr(usage_agent, "SOURCE_ROOTS", {"T": str(tmp_path)})
     r = column.run_column_impact("IF_ORDER_TMP", "TOTAL_AMT", "T")
     assert r["table_files"] == 0 and r["rule"] == "no-table-hit" and not r["hits"]
+
+
+def test_all_roots_are_searched_by_default(tmp_path: Path, monkeypatch: Any):
+    """설정한 루트는 모두 검색 대상이다. 두 번째 루트에만 있는 사용처도 나와야 한다."""
+    second = tmp_path / "mes"
+    second.mkdir()
+    (second / "mes_load.sql").write_text(
+        "UPDATE IF_ORDER_TMP SET TOTAL_AMT = 0;\n", encoding="utf-8")
+    monkeypatch.setattr(usage_agent, "SOURCE_ROOTS", {"EVAL": EVAL, "MES": str(second)})
+    r = column.run_column_impact("IF_ORDER_TMP", "TOTAL_AMT", detail="summary")
+    assert r["root"] == "EVAL, MES"
+    full = column.run_column_impact("IF_ORDER_TMP", "TOTAL_AMT")
+    assert {h["root"] for h in full["hits"]} == {"EVAL", "MES"}
+    grid = column.column_grid("IF_ORDER_TMP", "TOTAL_AMT", "-")
+    assert any(row["root"] == "MES" and row["program"] == "mes_load.sql"
+               for row in grid["grid"]["rows"])
+    # 루트가 여럿이면 챗봇 답의 위치에 루트를 붙인다(같은 파일 이름이 루트마다 있을 수 있다).
+    assert any(p.startswith("[MES] mes_load.sql:1") for p in r["places"])
 
 
 def test_unknown_root_is_not_empty_result():
@@ -231,7 +250,7 @@ def test_grid_has_header_rows_and_tones(monkeypatch: Any):
                                    "long TOTAL_AMT": ("variable", "")}))
     g = column.column_grid("IF_ORDER_TMP", "TOTAL_AMT", "EVAL")
     keys = [c["key"] for c in g["grid"]["columns"]]
-    assert keys[:3] == ["verdict", "program", "line"]
+    assert keys[:4] == ["verdict", "root", "program", "line"]
     rows = g["grid"]["rows"]
     assert len(rows) == 12 and all(set(keys) <= set(r) for r in rows)
     # 영향 있음 → 확인 필요 → 영향 없음 순서

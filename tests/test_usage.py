@@ -236,3 +236,61 @@ def test_truly_absent_is_still_no(mixed_root: str):
     """진짜 없는 것은 '없다'가 맞다."""
     r = run_usage("NO_SUCH_NAME", root=mixed_root)
     assert r["used"] == "no" and r["rule"] == "no-hit"
+
+
+# --------------------------------------------------------------------------
+# 소스 루트 여러 개 — 설정한 루트는 모두 검색 대상이다
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def two_roots(tmp_path: Path, monkeypatch: Any) -> dict[str, Path]:
+    import agents.usage.agent as ua
+
+    erp, mes = tmp_path / "erp", tmp_path / "mes"
+    erp.mkdir()
+    mes.mkdir()
+    (erp / "a.c").write_text("long TOTAL_AMT;\n", encoding="utf-8")
+    (mes / "b.c").write_text("TOTAL_AMT = 1;\n", encoding="utf-8")
+    monkeypatch.setattr(ua, "SOURCE_ROOTS", {"ERP": str(erp), "MES": str(mes)})
+    return {"ERP": erp, "MES": mes}
+
+
+def test_no_root_searches_every_root(two_roots: dict[str, Path]):
+    """예전에는 첫 번째 루트만 봐서 MES 에만 있는 사용처를 놓쳤다."""
+    r = run_usage("TOTAL_AMT", detail="full")
+    assert r["root"] == "ERP, MES"
+    assert {h["root"] for h in r["hits"]} == {"ERP", "MES"}
+    assert r["files_scanned"] == 2 and not r["warnings"]
+
+
+def test_named_roots_limit_the_search(two_roots: dict[str, Path]):
+    assert {h["root"] for h in run_usage("TOTAL_AMT", root="mes", detail="full")["hits"]} == {"MES"}
+    r = run_usage("TOTAL_AMT", root="ERP, MES", detail="full")
+    assert r["hit_count"] == 2
+
+
+def test_unknown_root_in_list_is_flagged(two_roots: dict[str, Path]):
+    r = run_usage("TOTAL_AMT", root="ERP,NOPE")
+    assert r["used"] == "unknown" and r["rule"] == "unknown-root"
+    assert any("NOPE" in w for w in r["warnings"])
+
+
+def test_empty_root_is_warned_not_hidden(two_roots: dict[str, Path], tmp_path: Path,
+                                         monkeypatch: Any):
+    """한 루트의 경로가 틀려도 나머지 결과는 낸다. 대신 그 루트를 조용히 빼지 않는다."""
+    import agents.usage.agent as ua
+
+    monkeypatch.setitem(ua.SOURCE_ROOTS, "BAD", str(tmp_path / "no_such_dir"))
+    r = run_usage("TOTAL_AMT")
+    assert r["used"] == "yes" and r["hit_count"] == 2
+    assert any("'BAD'" in w and "확인 필요" in w for w in r["warnings"])
+
+
+def test_overlapping_roots_count_a_file_once(two_roots: dict[str, Path], tmp_path: Path,
+                                             monkeypatch: Any):
+    import agents.usage.agent as ua
+
+    monkeypatch.setitem(ua.SOURCE_ROOTS, "ALL", str(tmp_path))     # erp·mes 를 포함한다
+    r = run_usage("TOTAL_AMT", detail="full")
+    assert r["files_scanned"] == 2 and r["hit_count"] == 2

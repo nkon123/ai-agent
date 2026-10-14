@@ -45,7 +45,8 @@ def find_usage(name: str, root: str = "") -> str:
 
     테이블은 이 툴이 아니라 analyze_table_impact 가 조사한다.
     주석과 문자열 안의 언급은 사용처로 세지 않는다.
-    name 에는 찾을 식별자 이름을, root 에는 소스 루트 라벨(생략 가능)을 넣는다.
+    name 에는 찾을 식별자 이름을 넣는다. root 는 사용자가 특정 소스 루트를
+    말했을 때만 넣는다 — 비우면 설정된 소스 루트 전부를 찾는다.
     """
     # summary 인 이유: 매칭이 수백 줄이면 full 은 매 턴 컨텍스트를 먹는다.
     r = run_usage(name, root=root, detail="summary")

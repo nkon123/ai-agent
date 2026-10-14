@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agents.impact import run_impact  # noqa: E402
 from agents.impact import agent as impact  # noqa: E402
+from agents.usage import agent as usage_agent  # noqa: E402
 from core.sqlstmt import classify, masks_strings, statement_at  # noqa: E402
 
 PROC = """void proc(void)
@@ -159,6 +160,20 @@ def test_impact_unknown_table_is_not_an_error():
     assert r["write_count"] == r["read_count"] == 0
 
 
+def test_impact_searches_every_root(tmp_path: Path, monkeypatch: Any):
+    """테이블 영향도도 루트를 비우면 설정된 루트 전부를 본다."""
+    erp, mes = tmp_path / "erp", tmp_path / "mes"
+    erp.mkdir()
+    mes.mkdir()
+    (erp / "a.sql").write_text("SELECT A FROM IF_T;\n", encoding="utf-8")
+    (mes / "b.sql").write_text("DELETE FROM IF_T;\n", encoding="utf-8")
+    monkeypatch.setattr(usage_agent, "SOURCE_ROOTS", {"ERP": str(erp), "MES": str(mes)})
+    r = run_impact("IF_T")
+    assert r["root"] == "ERP, MES"
+    assert {s["root"] for s in r["statements"]} == {"ERP", "MES"}
+    assert r["read_count"] == 1 and r["write_count"] == 1
+
+
 def test_impact_unknown_root_warns():
     r = run_impact("IF_ORDER_TMP", root="NOPE")
     assert r["rule"] == "unknown-root"
@@ -289,7 +304,7 @@ MIXED_CASE = """void a(void) {
 def mixed_case_root(tmp_path: Path, monkeypatch: Any) -> str:
     """대소문자가 뒤섞인 소스 하나를 가진 루트."""
     (tmp_path / "mixed.pc").write_text(MIXED_CASE, encoding="utf-8")
-    monkeypatch.setattr(impact, "SOURCE_ROOTS", {"CASE": str(tmp_path)})
+    monkeypatch.setattr(usage_agent, "SOURCE_ROOTS", {"CASE": str(tmp_path)})
     from agents.usage.agent import scan_files
 
     scan_files.cache.clear()

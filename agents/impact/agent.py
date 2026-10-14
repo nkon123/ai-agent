@@ -29,7 +29,12 @@ if str(_ROOT) not in sys.path:
 
 from langgraph.graph import END, START, StateGraph  # noqa: E402
 
-from agents.usage.agent import LANG_BY_SUFFIX, scan_files  # noqa: E402
+from agents.usage.agent import (  # noqa: E402
+    LANG_BY_SUFFIX,
+    resolve_roots,
+    roots_label,
+    scan_roots,
+)
 from config import IMPACT_MAX_STATEMENTS, SOURCE_ROOTS, USE_LLM  # noqa: E402
 from core.cache import cached  # noqa: E402
 from core.progress import notify  # noqa: E402
@@ -41,8 +46,8 @@ Detail = Literal["full", "summary", "minimal"]
 
 class ImpactState(TypedDict, total=False):
     table: str
-    root_label: str
-    root_path: str
+    root_label: str                # 'ERP, MES' — 결과에 찍는 이름
+    roots: list[tuple[str, str]]   # 실제로 찾는 루트 [(이름, 경로)]
     files_scanned: int
     statements: list[dict[str, Any]]
     unreadable: list[str]
@@ -57,21 +62,12 @@ class ImpactState(TypedDict, total=False):
 
 
 def resolve_root(state: ImpactState) -> ImpactState:
-    label = (state.get("root_label") or "").strip()
-    if label:
-        if label not in SOURCE_ROOTS:
-            return {
-                "root_path": "",
-                "decided_by": "fallback",
-                "rule": "unknown-root",
-                "warnings": [
-                    f"'{label}' 은 설정에 없는 소스 루트다 — 확인 필요 "
-                    f"(설정된 루트: {', '.join(SOURCE_ROOTS)})"
-                ],
-            }
-        return {"root_label": label, "root_path": SOURCE_ROOTS[label]}
-    first = next(iter(SOURCE_ROOTS.items()))
-    return {"root_label": first[0], "root_path": first[1]}
+    """비우면 설정된 루트 전부(usage 와 같은 resolve_roots)."""
+    roots, warnings = resolve_roots(state.get("root_label") or "")
+    if not roots:
+        return {"roots": [], "decided_by": "fallback", "rule": "unknown-root",
+                "warnings": warnings}
+    return {"roots": roots, "root_label": roots_label(roots)}
 
 
 # --------------------------------------------------------------------------
@@ -81,7 +77,7 @@ def resolve_root(state: ImpactState) -> ImpactState:
 
 def collect(state: ImpactState) -> ImpactState:
     """테이블 이름이 나온 줄을 찾아 그 줄이 속한 SQL 문장을 잘라낸다."""
-    if not state.get("root_path"):
+    if not state.get("roots"):
         return {}
 
     table = (state.get("table") or "").strip()
@@ -94,7 +90,9 @@ def collect(state: ImpactState) -> ImpactState:
         }
 
     notify(f"{state['root_label']} 소스에서 {table} 찾는 중")
-    files = scan_files(state["root_path"])
+    rooted, root_warnings = scan_roots(state["roots"])
+    root_of = {f: label for label, f in rooted}
+    files = [f for _, f in rooted]
     # SQL 식별자는 대소문자를 가리지 않는다. FROM if_order_tmp 와
     # FROM IF_ORDER_TMP 는 같은 테이블이다. 대소문자를 따지면 소스마다
     # 표기가 달라 통째로 놓친다.
@@ -127,6 +125,7 @@ def collect(state: ImpactState) -> ImpactState:
             info = classify(stmt.sql, table, lang)
             statements.append(
                 {
+                    "root": root_of[path],
                     "file": path,
                     "line": stmt.hit_line,
                     "start_line": stmt.start_line,
@@ -141,14 +140,13 @@ def collect(state: ImpactState) -> ImpactState:
                 }
             )
 
-    warnings = [f"읽지 못한 파일 {len(unreadable)}건 — 확인 필요"] if unreadable else []
+    warnings = root_warnings + (
+        [f"읽지 못한 파일 {len(unreadable)}건 — 확인 필요"] if unreadable else [])
 
     if not files:
         return {
             "files_scanned": 0, "statements": [], "unreadable": unreadable,
-            "decided_by": "fallback", "rule": "no-files",
-            "warnings": warnings
-            + [f"'{state['root_path']}' 아래에 스캔할 소스가 없다 — 확인 필요"],
+            "decided_by": "fallback", "rule": "no-files", "warnings": warnings,
         }
 
     # 문장이 잘리지 않았는지(세미콜론을 못 찾음) 알려 준다. 잘린 조각으로
@@ -311,7 +309,7 @@ def run_impact(
     return {
         **base,
         "root": state.get("root_label"),
-        "root_path": state.get("root_path"),
+        "root_paths": dict(state.get("roots") or []),
         "files_scanned": state.get("files_scanned", 0),
         "statements": stmts,
         "unreadable": state.get("unreadable") or [],
@@ -325,7 +323,8 @@ if __name__ == "__main__":
 
     ap = argparse.ArgumentParser(description="테이블 영향도 조사")
     ap.add_argument("table", help="조사할 테이블 이름")
-    ap.add_argument("--root", default="", help=f"소스 루트 ({', '.join(SOURCE_ROOTS)})")
+    ap.add_argument("--root", default="",
+                    help=f"소스 루트 ({', '.join(SOURCE_ROOTS)}). 비우면 전부, 쉼표로 여러 개")
     ap.add_argument("--detail", choices=["full", "summary", "minimal"], default="full")
     ap.add_argument("--sql", action="store_true", help="SQL 문장을 그대로 출력")
     args = ap.parse_args()
