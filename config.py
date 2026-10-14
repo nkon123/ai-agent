@@ -332,8 +332,9 @@ IMPACT_MAX_STATEMENTS: int = _env_int("IMPACT_MAX_STATEMENTS", 3)
 # 4B 모델로 줄당 1~3초라 40줄이면 1~2분이다(툴 타임아웃 MCP_TOOL_TIMEOUT_SEC 안쪽).
 # 넘는 줄은 'LLM 미확인'으로 남긴다 — 버리지 않는다.
 COLUMN_IMPACT_MAX_LLM: int = _env_int("COLUMN_IMPACT_MAX_LLM", 40)
-# 인터페이스 오류 확인(check_interface_errors)이 이어서 조사할 원인 컬럼 수 상한.
-# 원인 컬럼 하나가 컬럼 영향도 한 번(LLM 최대 COLUMN_IMPACT_MAX_LLM 줄)이다.
+# 인터페이스 오류 확인(check_interface_errors)이 이어서 조사할 영향도 수 상한.
+# 원인 컬럼 하나가 컬럼 영향도 한 번(LLM 최대 COLUMN_IMPACT_MAX_LLM 줄), 원인 컬럼이 없는
+# 오류의 도착 테이블 하나가 테이블 영향도 한 번(LLM 최대 IMPACT_MAX_STATEMENTS 문장)이다.
 # 툴 타임아웃(MCP_TOOL_TIMEOUT_SEC) 안에 끝나게 작게 둔다. 넘는 건 '확인 필요'로 알린다.
 INCIDENT_MAX_IMPACTS: int = _env_int("INCIDENT_MAX_IMPACTS", 2)
 # 그리드에 담을 최대 줄 수. 흔한 컬럼(STATUS 등)은 수천 줄이 나온다.

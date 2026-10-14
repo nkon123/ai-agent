@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mapper namespace="stock">
+
+  <!-- 데모용 가짜 소스. 재고 수신 현황 화면 -->
+  <select id="selectStockRecv" resultType="map">
+    SELECT ITEM_CD, WH_CD, STOCK_QTY, PROC_YN
+      FROM IF_STOCK_TMP
+     WHERE WH_CD = #{whCd}
+  </select>
+
+</mapper>

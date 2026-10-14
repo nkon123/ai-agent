@@ -120,14 +120,41 @@ def test_grid_reuses_the_last_investigation(monkeypatch: Any):
     g = incident.incident_grid("3일", "-")
     keys = [c["key"] for c in g["grid"]["columns"]]
     assert keys[:4] == ["ifid", "cause", "mail_detail", "verdict"]
-    assert g["grid"]["rows"] and all(row["ifid"] == "IF_ORD_RECV" for row in g["grid"]["rows"])
-    assert "원인 컬럼 1개" in g["subtitle"]
+    assert {row["ifid"] for row in g["grid"]["rows"]} == {"IF_ORD_RECV", "IF_STK_RECV"}
+    assert "원인 컬럼 1개 · 도착 테이블 1개" in g["subtitle"]
     # 무슨 문제였는지가 표 머리와 행 모두에 보인다.
     assert g["subtitle"].startswith("원인: IF_ORD_RECV IF_ORDER_TMP.ORD_NO 길이 초과(실제 25 > 최대 20)")
     row = g["grid"]["rows"][0]
     assert row["cause"] == "IF_ORDER_TMP.ORD_NO 길이 초과(실제 25 > 최대 20)"
     assert row["mail_detail"].startswith("ORA-12899: value too large")
     assert g["grid"]["source"]["word_key"] == "src_word" and row["src_word"] == "ORD_NO"
+
+
+def test_error_without_cause_column_gets_target_table_impact():
+    """원인 컬럼이 없는 오류(timeout)도 도착 테이블을 쓰는 프로그램을 조사한다(사용자 지적).
+
+    데이터가 안 들어온 것이므로 읽는 문장은 영향 있음, 쓰는 문장(적재 프로그램일 수 있음)은 확인 필요.
+    """
+    r = incident.run_incident("3일")
+    stk = next(c for c in r["cases"] if c["key"] == "IF_STK_RECV")
+    assert stk["impacts"] == [] and len(stk["table_impacts"]) == 1
+    ti = stk["table_impacts"][0]
+    assert ti["table"] == "IF_STOCK_TMP" and ti["counts"] == {"yes": 2, "unknown": 1, "no": 0}
+    got = {(st["program"], st["line"]): (st["verdict"], st["usage"]) for st in ti["statements"]}
+    assert got == {("stock_query.xml", 7): ("yes", "조회"), ("stock_sync.prc", 6): ("yes", "병합"),
+                   ("stock_sync.prc", 13): ("unknown", "수정")}
+    # 원인 컬럼이 있는 케이스가 먼저다.
+    assert [c["key"] for c in r["cases"]] == ["IF_ORD_RECV", "IF_STK_RECV"]
+    rows = [row for row in incident.incident_grid("3일", "-")["grid"]["rows"] if row["ifid"] == "IF_STK_RECV"]
+    assert len(rows) == 3 and all(row["src_word"] == "IF_STOCK_TMP" and row["src_path"] for row in rows)
+    assert rows[0]["cause"] == "IF_STOCK_TMP 미적재 (원인 컬럼 없음)" and rows[0]["place"] == "테이블 영향도"
+
+
+def test_table_impact_shares_the_impact_cap(monkeypatch: Any):
+    monkeypatch.setattr(incident, "INCIDENT_MAX_IMPACTS", 1)
+    r = incident.run_incident("3일")
+    stk = next(c for c in r["cases"] if c["key"] == "IF_STK_RECV")
+    assert stk["table_impacts"] == [] and any("상한" in w for w in r["warnings"])
 
 
 def _run(coro: Any) -> Any:
@@ -161,7 +188,12 @@ def test_check_interface_errors_tells_the_whole_story():
     lines = text.splitlines()
     assert "**IF_ORD_RECV** · 확인됨" in text and "**IF_STK_RECV** · 확인됨" in text
     # 원인 컬럼이 없는 케이스(timeout)는 빈 칸이 아니라 그 사실을 적는다.
-    assert "- 원인 컬럼: 메일에 적힌 컬럼 오류가 없다" in text
+    assert "- 원인 컬럼: 메일에 적힌 컬럼 오류가 없다 — 도착 테이블을 쓰는 프로그램을 조사했다" in text
+    assert "IF_STOCK_TMP 을(를) 쓰는 문장 3개 (읽기 2 · 쓰기 1" in text
+    assert "- 영향 있는 곳 (읽는 곳):" in text and "`stock_query.xml:7` 조회 — `FROM IF_STOCK_TMP`" in text
+    assert "- 확인 필요한 곳 (쓰는 곳·판정 못 함):" in text
+    # 조사했으니 '다른 툴로 확인하라' 안내는 붙지 않는다.
+    assert "analyze_table_impact 로 확인" not in text
     assert any(l.startswith("  - `[ERP] ord_join.sql:5` 조회 — `SELECT") for l in lines)
     assert not any(l.startswith("  원인") or l.lstrip().startswith("·") for l in lines)
     data = json.loads(grid.contents[0].text)

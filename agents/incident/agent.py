@@ -5,6 +5,8 @@
     오류 메일 → IFID → 마스터의 테이블(출발·도착)            (iferr)
     → 메일의 오류 내용에서 원인 컬럼(ORA-12899 길이 초과 등)  (iferr.extract_issues)
     → 그 테이블·컬럼을 쓰는 소스와 줄마다 영향 판정          (impact.column)
+    원인 컬럼이 없으면(timeout, 컬럼 이름 없는 오류)
+    → 마스터의 도착 테이블을 쓰는 SQL 문장 전부와 읽기·쓰기    (impact.agent)
 
 로컬 소형 모델은 툴을 이어 부르지 못한다. 그래서 이어 붙이는 일을 모델이 아니라
 이 에이전트가 한다. 각 단계는 원래 에이전트의 함수를 그대로 부른다 — 단계 툴로
@@ -37,6 +39,7 @@ from agents.iferr.agent import (  # noqa: E402
     parse_period,
     run_iferr,
 )
+from agents.impact import run_impact  # noqa: E402
 from agents.impact.column import (  # noqa: E402
     GRID_COLUMNS,
     VERDICT_LABEL,
@@ -50,6 +53,7 @@ from config import (  # noqa: E402
 )
 from core.cache import TTLCache  # noqa: E402
 from core.progress import notify  # noqa: E402
+from agents.usage.agent import source_ref  # noqa: E402
 from core.sqlstmt import bare_table_name  # noqa: E402
 
 
@@ -67,7 +71,7 @@ def targets_of(case: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
     for issue in case.get("issues") or []:
         if not issue.get("column"):
             warnings.append(f"[{case['key']}] {issue_text(issue)} — 메일에 컬럼 이름이 없어 "
-                            "영향도를 조사하지 못했다, 확인 필요")
+                            "컬럼 영향도는 조사하지 못했다(도착 테이블 영향도로 대신 본다)")
             continue
         if issue.get("table"):
             table = bare_table_name(issue["table"])[0].upper()
@@ -84,6 +88,50 @@ def targets_of(case: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
                     # 메일에 적힌 오류 줄 원문. 요약(issue_text)이 맞는지 사람이 대 본다.
                     "mail_detail": issue.get("detail") or issue.get("evidence") or ""})
     return out, warnings
+
+
+def table_targets(case: dict[str, Any]) -> list[str]:
+    """원인 컬럼이 없을 때 조사할 테이블 — 마스터의 도착 테이블(실패하면 데이터가 안 들어가는 쪽)."""
+    return list(dict.fromkeys(
+        bare_table_name(f.get("tar_table") or "")[0].upper()
+        for f in case.get("flows") or [] if (f.get("tar_table") or "").strip()))
+
+
+# 테이블 영향도 문장의 판정 — '데이터가 안 들어왔다' 는 관점이다.
+#   읽는 문장   영향 있음  들어왔어야 할 데이터가 없으니 빈 결과·누락으로 처리된다
+#   쓰는 문장   확인 필요  적재 프로그램 자신이거나 다른 경로로 채우는 곳일 수 있다
+#   모름        확인 필요  읽기·쓰기를 정하지 못했다
+_ROLE_VERDICT = {
+    "read": ("yes", "이 테이블을 읽는다 — 데이터가 안 들어오면 빈 결과·누락으로 처리된다"),
+    "write": ("unknown", "이 테이블에 쓴다 — 적재 프로그램이거나 다른 경로로 채우는 곳일 수 있다"),
+    "unknown": ("unknown", "읽기·쓰기를 정하지 못했다"),
+}
+_KIND_LABEL = {"select": "조회", "insert": "입력", "update": "수정", "delete": "삭제", "merge": "병합"}
+
+
+def table_impact(table: str) -> dict[str, Any]:
+    """테이블 영향도(문장 단위)에 '데이터 미적재' 관점의 판정을 붙인다."""
+    r = run_impact(table, detail="full")
+    stmts = []
+    for st in r.get("statements") or []:
+        verdict, reason = _ROLE_VERDICT.get(st["role"], _ROLE_VERDICT["unknown"])
+        if st.get("conflict"):
+            # 규칙과 LLM 이 갈렸다(사용 아님·읽기/쓰기 다름) — 한쪽을 고르지 않는다.
+            verdict, reason = "unknown", f"규칙은 {st['role']}, LLM 은 다르게 봤다 — 확인 필요"
+        lines = (st.get("sql") or "").splitlines()
+        idx = st["line"] - st["start_line"]
+        code = (lines[idx] if 0 <= idx < len(lines) else (lines[0] if lines else "")).strip()
+        stmts.append({**st, "verdict": verdict, "reason": reason, "code": code[:300],
+                      "usage": _KIND_LABEL.get(st["kind"], st["kind"] or "-"),
+                      "program": Path(st["file"]).name})
+    rank = {"yes": 0, "unknown": 1, "no": 2}
+    stmts.sort(key=lambda x: (rank[x["verdict"]], x["root"], x["file"], x["line"]))
+    counts = {k: sum(1 for x in stmts if x["verdict"] == k) for k in ("yes", "unknown", "no")}
+    return {"table": r.get("table") or table, "root": r.get("root") or "", "rule": r.get("rule") or "",
+            "files_scanned": r.get("files_scanned", 0), "files": len({x["file"] for x in stmts}),
+            "read": r.get("read_count", 0), "write": r.get("write_count", 0),
+            "unknown_role": r.get("unknown_count", 0), "counts": counts, "statements": stmts,
+            "warnings": r.get("warnings") or []}
 
 
 def _investigate(period: str, key: str, subject: str = "") -> dict[str, Any]:
@@ -115,21 +163,39 @@ def _investigate(period: str, key: str, subject: str = "") -> dict[str, Any]:
             ci = run_column_impact(t["table"], t["column"], detail="summary")
             impacts.append({**t, "result": ci})
             warnings += [f"[{c['key']} {t['table']}.{t['column']}] {w}" for w in ci["warnings"]]
+        # 원인 컬럼으로 조사하지 못한 오류(timeout, 컬럼 이름 없는 오류)는 도착 테이블을 쓰는
+        # 프로그램을 본다. 예전에는 '이 테이블은 analyze_table_impact 로 확인' 안내에서 끝나
+        # 원인 컬럼이 없는 오류만 영향도가 비었다(사용자 지적).
+        table_impacts: list[dict[str, Any]] = []
+        if not impacts:
+            tables = table_targets(c)
+            if not tables and (c.get("db") or {}).get("status") != "unknown":
+                warnings.append(f"[{c['key']}] 마스터에서 도착 테이블을 찾지 못해 영향도를 조사하지 "
+                                "못했다 — 확인 필요")
+            for table in tables:
+                if budget <= 0:
+                    skipped += 1
+                    continue
+                budget -= 1
+                notify(f"{c['key']} — 도착 테이블 {table} 영향도 조사 중")
+                ti = table_impact(table)
+                table_impacts.append(ti)
+                warnings += [f"[{c['key']} {table}] {w}" for w in ti["warnings"]]
         db = c.get("db") or {}
         cases.append({
             "key": c["key"], "status": db.get("status", "unknown"),
             "master_source": db.get("source", "db"), "impact": c.get("impact", ""),
             "rule": c.get("rule", ""), "flows": c.get("flows") or [],
             "flow_texts": [flow_text(f) for f in (c.get("flows") or [])[:3]],
-            "issues": c.get("issues") or [], "impacts": impacts,
+            "issues": c.get("issues") or [], "impacts": impacts, "table_impacts": table_impacts,
             "mail_count": len(c.get("mails") or []),
             "judged_by": c.get("judged_by", ""), "found_by": c.get("found_by", ""),
         })
-    # 원인 컬럼까지 밝혀진 케이스가 먼저다 — 할 일이 분명한 쪽을 먼저 보인다.
-    cases.sort(key=lambda c: not c["impacts"])
+    # 원인 컬럼까지 밝혀진 케이스가 먼저, 테이블 영향도만 본 케이스가 다음이다.
+    cases.sort(key=lambda c: (not c["impacts"], not c["table_impacts"]))
     if skipped:
-        warnings.append(f"영향도 조사 상한({INCIDENT_MAX_IMPACTS}건)을 넘은 원인 컬럼 {skipped}건은 "
-                        "조사하지 않았다 — 확인 필요 (INCIDENT_MAX_IMPACTS, 또는 컬럼 영향도를 따로 물을 것)")
+        warnings.append(f"영향도 조사 상한({INCIDENT_MAX_IMPACTS}건)을 넘은 {skipped}건은 조사하지 "
+                        "않았다 — 확인 필요 (INCIDENT_MAX_IMPACTS, 또는 컬럼·테이블 영향도를 따로 물을 것)")
     # 제목으로 집은 메일이 실제로 어느 것이었는지 — 답에 밝혀야 다른 메일을 본 걸 알아챈다.
     picked = next((m for c in r["cases"] for m in (c.get("mails") or [])), None) if subject else None
     return {"period": period, "key": key, "subject": subject, "hours": hours, "label": label,
@@ -177,16 +243,33 @@ def incident_grid(period: str = "", key: str = "", subject: str = "") -> dict[st
             rows += [{"ifid": c["key"], "cause": imp["issue_text"],
                       "mail_detail": imp.get("mail_detail", ""), "src_word": imp["column"], **row}
                      for row in g["grid"]["rows"]]
+        for ti in c.get("table_impacts", []):
+            # 원인 컬럼이 없는 오류 — 도착 테이블을 쓰는 문장. 소스 보기는 테이블 이름을 강조한다.
+            rows += [{"ifid": c["key"], "cause": f"{ti['table']} 미적재 (원인 컬럼 없음)",
+                      "mail_detail": "", "src_word": ti["table"],
+                      "verdict": VERDICT_LABEL[st["verdict"]], "root": st["root"],
+                      "program": st["program"], "line": st["line"], "usage": st["usage"],
+                      "place": "테이블 영향도",
+                      "stmt": f"{st['kind'] or '-'} {st['start_line']}~{st['end_line']}",
+                      "code": st["code"], "reason": st["reason"],
+                      "decided_by": "규칙·LLM 갈림" if st.get("conflict") else
+                                    ("규칙+LLM" if st.get("llm") else "규칙"),
+                      "rule_verdict": st["role"], "file": st["file"],
+                      "src_path": source_ref(st["file"], st["root"])}
+                     for st in ti["statements"]]
     impacts = [i for c in r["cases"] for i in c["impacts"]]
+    tables = [t for c in r["cases"] for t in c.get("table_impacts", [])]
     counts = {k: sum(1 for row in rows if row["verdict"] == v) for k, v in VERDICT_LABEL.items()}
     # 무슨 문제였는지를 표 머리에도 둔다 — 행마다 '원인' 칸을 읽지 않아도 보이게.
-    causes = list(dict.fromkeys(f"{c['key']} {i['issue_text']}" for c in r["cases"]
-                                for i in c["impacts"]))
+    causes = list(dict.fromkeys([f"{c['key']} {i['issue_text']}" for c in r["cases"]
+                                 for i in c["impacts"]]
+                                + [f"{c['key']} {t['table']} 미적재" for c in r["cases"]
+                                   for t in c.get("table_impacts", [])]))
     return {
         "title": "인터페이스 오류 영향도 — "
                  + (f"메일 '{r['picked_mail']['subject'][:40]}'" if r.get("picked_mail") else r["label"]),
         "subtitle": (("원인: " + " / ".join(causes) + " · " if causes else "")
-                     + f"메일 {r['mail_count']}통 · 오류 {len(r['cases'])}건 · 원인 컬럼 {len(impacts)}개 · "
+                     + f"메일 {r['mail_count']}통 · 오류 {len(r['cases'])}건 · 원인 컬럼 {len(impacts)}개 · 도착 테이블 {len(tables)}개 · "
                      f"행 {len(rows)}개 (영향 있음 {counts['yes']} / 확인 필요 "
                      f"{counts['unknown']} / 영향 없음 {counts['no']})"),
         "causes": causes,
@@ -224,5 +307,12 @@ if __name__ == "__main__":
                   f" / 영향 없음 {n['no']}")
             for p in ci["places"]:
                 print(f"      · {p}")
+        for ti in c["table_impacts"]:
+            n = ti["counts"]
+            print(f"    원인 컬럼 없음 → 도착 테이블 {ti['table']}: 문장 {len(ti['statements'])}개 — "
+                  f"영향 있음 {n['yes']} / 확인 필요 {n['unknown']}")
+            for st in ti["statements"]:
+                print(f"      · [{st['root']}] {st['program']}:{st['line']} {st['usage']} "
+                      f"({VERDICT_LABEL[st['verdict']]}) — {st['code'][:60]}")
     for w in res["warnings"]:
         print(f"  [확인 필요] {w}")

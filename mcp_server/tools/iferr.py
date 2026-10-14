@@ -126,12 +126,37 @@ async def check_interface_errors(
             mark = {"found": "확인됨", "missing": "데이터 없음"}.get(c["status"], "확인 불가")
             src = " / 마스터: 파일" if c["master_source"] == "file" else ""
             lines += ["", f"**{c['key']}** · {mark} — {c['impact']}"]
+            tis = c.get("table_impacts") or []
+            then = "도착 테이블을 쓰는 프로그램을 조사했다" if tis else "영향도는 조사하지 않았다"
             if not c["issues"]:
                 # 빈 칸으로 두면 '원인 없음'으로 읽힌다. 메일에 컬럼 오류가 안 적혔을 뿐이다.
-                lines.append("- 원인 컬럼: 메일에 적힌 컬럼 오류가 없다 — 컬럼 영향도는 조사하지 않았다")
+                lines.append(f"- 원인 컬럼: 메일에 적힌 컬럼 오류가 없다 — {then}")
             elif not c["impacts"]:
-                lines += [f"- 원인: **{issue_text(i)}** — 영향도를 조사하지 못했다(아래 확인 필요)"
+                lines += [f"- 원인: **{issue_text(i)}** — 컬럼을 정하지 못해 {then}"
                           for i in c["issues"]]
+            for ti in tis:
+                n_imp += 1
+                n = ti["counts"]
+                if not ti["statements"]:
+                    state = ("소스를 찾지 못했다 — 확인 필요" if ti["rule"] in ("no-files", "unknown-root")
+                             else f"이 테이블을 쓰는 문장을 찾지 못했다 (파일 {ti['files_scanned']}개 중)")
+                    lines.append(f"- 영향도: {ti['table']} — {state}")
+                    continue
+                lines.append(
+                    f"- 영향도: 영향 있음 **{n['yes']}** / 확인 필요 {n['unknown']} — {ti['table']} 을(를) "
+                    f"쓰는 문장 {len(ti['statements'])}개 (읽기 {ti['read']} · 쓰기 {ti['write']}, "
+                    f"{ti['root']}, 파일 {ti['files']}개)")
+                many = len({st["root"] for st in ti["statements"]}) > 1
+                for verdict, title in (("yes", "영향 있는 곳 (읽는 곳):"),
+                                       ("unknown", "확인 필요한 곳 (쓰는 곳·판정 못 함):")):
+                    items = [st for st in ti["statements"] if st["verdict"] == verdict]
+                    if not items:
+                        continue
+                    lines.append(f"- {title}")
+                    lines += [f"  - {_code(('[' + st['root'] + '] ' if many else '') + st['program'] + ':' + str(st['line']))}"
+                              f" {st['usage']} — {_code(st['code'])}" for st in items[:5]]
+                    if len(items) > 5:
+                        lines.append(f"  - 외 {len(items) - 5}곳")
             for imp in c["impacts"]:
                 n_imp += 1
                 ci, n = imp["result"], imp["result"]["counts"]
@@ -161,8 +186,8 @@ async def check_interface_errors(
         if n_imp:
             lines += ["", "전체 목록(프로그램·줄·판정 근거)은 답 아래 [표로 보기] 에서 볼 수 있다"]
         else:
-            # 원인 컬럼이 없으면 예전처럼 다음 질문을 짚어 준다. 소형 모델은 툴을 이어 부르지
-            # 못하고, 'EMP.TB_ORDER' 를 그대로 보여 주면 그 문자열로 영향도를 물어 엉뚱한 것을 찾는다.
+            # 영향도를 하나도 조사하지 못했으면(상한·마스터 없음) 다음 질문을 짚어 준다. 소형 모델은
+            # 툴을 이어 부르지 못하고, 'EMP.TB_ORDER' 를 그대로 보여 주면 그 문자열로 물어 엉뚱한 것을 찾는다.
             targets = [
                 bare_table_name(f["tar_table"])[0]
                 for c in r["cases"] for f in c["flows"] if f.get("tar_table")

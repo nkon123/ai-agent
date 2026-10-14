@@ -162,7 +162,7 @@ tests/              core/ + MCP 회귀 테스트
 
 | 툴 | 등급 | 무엇 |
 |---|---|---|
-| `check_interface_errors` | combo | 오류 메일 → 키 → 마스터 테이블 → 메일의 원인 컬럼 → 컬럼 영향도까지 한 번에 ([표로 보기]). 메일 제목을 말하면 그 메일 한 통만 |
+| `check_interface_errors` | combo | 오류 메일 → 키 → 마스터 테이블 → 메일의 원인 컬럼 → 컬럼 영향도까지 한 번에 ([표로 보기]). 원인 컬럼이 없으면 도착 테이블 영향도. 메일 제목을 말하면 그 메일 한 통만 |
 | `find_interface_tables` | combo | IFID 하나 → 참조 테이블(출발·도착)·경로 (메일 안 읽음) |
 | `find_table_interfaces` | combo | 테이블 하나 → 그 테이블을 출발·도착으로 쓰는 인터페이스 (메일 안 읽음) |
 | `analyze_table_impact` | combo | 테이블을 쓰는 SQL 문장 찾기 |
