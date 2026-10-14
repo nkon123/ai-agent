@@ -1172,3 +1172,157 @@ def test_mcp_find_interface_tables_says_unknown():
 
     text = _run(_with_client(call)).content[0].text
     assert "확인 불가" in text and "없다는 뜻이 아니다" in text
+
+
+# --------------------------------------------------------------------------
+# 테이블 → 관련 인터페이스 (find_table_interfaces)
+# --------------------------------------------------------------------------
+
+
+def _fake_table_master(monkeypatch: Any, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """IF_MST 역방향 조회를 흉내 낸다. SQL 은 설정과 같은 방식으로 만든다."""
+    calls: list[dict[str, Any]] = []
+    fields = _master_fields_with_schedule()
+    monkeypatch.setattr(iferr.oracle, "is_configured", lambda: True)
+    monkeypatch.setattr(iferr, "IFERR_MASTER_FIELDS", fields)
+    monkeypatch.setattr(iferr, "IFERR_TABLE_SQL", config.build_master_table_sql("IF_MST", fields))
+
+    def fake_query(sql: str, binds: Any = None, timeout: Any = None):
+        calls.append({"sql": sql, "binds": binds})
+        return rows
+
+    monkeypatch.setattr(iferr.oracle, "query", fake_query)
+    return calls
+
+
+def test_table_sql_binds_name_and_avoids_like():
+    """값은 바인드로만. LIKE 는 '_' 가 와일드카드라 TB_ORDER 가 TBXORDER 를 잡는다."""
+    sql = config.build_master_table_sql("IF_MST", _master_fields_with_schedule())
+    assert "FROM {schema}IF_MST" in sql
+    assert "UPPER(SRCTNAME) = :tname" in sql and "UPPER(TARTNAME) = :tname" in sql
+    assert ":dotname" in sql and "LIKE" not in sql.upper()
+
+
+def test_table_sql_needs_table_columns():
+    """출발·도착 테이블 컬럼이 없으면 거꾸로 찾을 방법이 없다 — 빈 SQL."""
+    assert config.build_master_table_sql("IF_MST", {"id": "IFID", "src_sys": "SRCSYS"}) == ""
+
+
+def test_table_sql_rejects_bad_identifier():
+    with pytest.raises(ValueError):
+        config.build_master_table_sql("IF_MST; DROP", _master_fields_with_schedule())
+
+
+def test_table_interfaces_marks_role_and_groups_schedules(monkeypatch: Any):
+    calls = _fake_table_master(monkeypatch, [
+        _master_row("X2", "IF_ORD", "ZORDER_BAK"),
+        _master_row("X1", "ZORDER", "IF_ORD"),
+        _master_row("X1", "ZORDER", "IF_ORD", h="12"),
+    ])
+    r = iferr.table_interfaces("if_ord")
+    assert calls[0]["binds"] == {"tname": "IF_ORD", "dotname": ".IF_ORD"}
+    assert r["status"] == "found" and r["decided_by"] == "rule"
+    # 데이터가 들어오는 쪽(도착)이 먼저, 스케줄 행은 한 건으로 묶인다.
+    assert [(i["id"], i["roles"]) for i in r["interfaces"]] == [
+        ("X1", ["target"]), ("X2", ["source"]),
+    ]
+    assert r["interfaces"][0]["schedule"] == "매일 08:30, 12:30"
+
+
+def test_table_interfaces_matches_schema_qualified_master_value(monkeypatch: Any):
+    """마스터 값이 'EMP.IF_ORD' 여도, 사용자가 '[ERP] EMP.IF_ORD' 로 물어도 같은 테이블이다."""
+    calls = _fake_table_master(monkeypatch, [_master_row("X1", "ZORDER", "EMP.IF_ORD")])
+    r = iferr.table_interfaces("[ERP] EMP.IF_ORD")
+    assert calls[0]["binds"]["tname"] == "IF_ORD"
+    assert r["status"] == "found" and r["qualifier"] == "EMP"
+    assert r["interfaces"][0]["roles"] == ["target"]
+
+
+def test_table_interfaces_drops_rows_for_other_tables(monkeypatch: Any):
+    """직접 쓴 SQL 이 넓게 잡아도 이름이 다른 테이블은 답에 섞지 않는다."""
+    _fake_table_master(monkeypatch, [_master_row("X1", "ZORDER", "IF_ORD"),
+                                     _master_row("X9", "A", "IF_ORD_TMP")])
+    r = iferr.table_interfaces("IF_ORD")
+    assert [i["id"] for i in r["interfaces"]] == ["X1"]
+    assert any("뺐다" in w for w in r["warnings"])
+
+
+def test_table_interfaces_only_mismatched_rows_is_unknown(monkeypatch: Any):
+    _fake_table_master(monkeypatch, [_master_row("X9", "A", "IF_ORD_TMP")])
+    r = iferr.table_interfaces("IF_ORD")
+    assert r["status"] == "unknown" and r["rule"] == "name-mismatch"
+
+
+def test_table_interfaces_none_is_missing(monkeypatch: Any):
+    _fake_table_master(monkeypatch, [])
+    r = iferr.table_interfaces("IF_ORD")
+    assert r["status"] == "missing" and r["rule"] == "no-rows"
+
+
+def test_table_interfaces_unknown_without_config(monkeypatch: Any):
+    """SQL·DB 설정이 없으면 '인터페이스 없음'이 아니라 '확인 불가'다."""
+    monkeypatch.setattr(iferr, "IFERR_TABLE_SQL", "")
+    r = iferr.table_interfaces("IF_ORD")
+    assert r["status"] == "unknown" and r["rule"] == "sql-not-configured" and r["warnings"]
+
+    monkeypatch.setattr(iferr, "IFERR_TABLE_SQL", "SELECT 1 FROM DUAL")
+    monkeypatch.setattr(iferr.oracle, "is_configured", lambda: False)
+    assert iferr.table_interfaces("IF_ORD")["rule"] == "db-not-configured"
+
+
+def test_table_interfaces_query_failure_is_unknown(monkeypatch: Any):
+    _fake_table_master(monkeypatch, [])
+
+    def boom(*a: Any, **k: Any):
+        raise RuntimeError("ORA-00942")
+
+    monkeypatch.setattr(iferr.oracle, "query", boom)
+    r = iferr.table_interfaces("IF_ORD")
+    assert r["status"] == "unknown" and r["rule"] == "query-failed"
+    assert any("ORA-00942" in w for w in r["warnings"])
+
+
+def test_table_interfaces_rejects_sentence_without_query(monkeypatch: Any):
+    calls = _fake_table_master(monkeypatch, [])
+    assert iferr.table_interfaces("")["rule"] == "no-table"
+    assert iferr.table_interfaces("주문 테이블")["rule"] == "bad-name"
+    assert not calls
+
+
+def test_table_interfaces_does_not_read_mail_or_call_llm(monkeypatch: Any):
+    _fake_table_master(monkeypatch, [_master_row("X1", "ZORDER", "IF_ORD")])
+
+    def boom(*a: Any, **k: Any) -> Any:
+        raise AssertionError("부르면 안 된다")
+
+    monkeypatch.setattr(iferr, "read_mails", boom)
+    monkeypatch.setattr(iferr, "explain", boom)
+    assert iferr.table_interfaces("IF_ORD")["interfaces"]
+
+
+def test_mcp_find_table_interfaces(monkeypatch: Any):
+    _fake_table_master(monkeypatch, [_master_row("X2", "IF_ORD", "ZORDER_BAK"),
+                                     _master_row("X1", "ZORDER", "IF_ORD")])
+
+    async def call(c: Client) -> Any:
+        tools = {t.name: t for t in (await c.list_tools()).tools}
+        return tools, await c.call_tool("find_table_interfaces", {"table": "IF_ORD"})
+
+    tools, result = _run(_with_client(call))
+    assert tools["find_table_interfaces"].annotations.read_only_hint is True
+    text = result.content[0].text
+    assert "인터페이스 2개 (들어옴 1, 나감 1" in text
+    assert "- X1 [들어옴]: [SAP] ZORDER → [ERP] IF_ORD (매일 08:30)" in text
+    assert "- X2 [나감]:" in text
+    # 다음 질문(오류 확인)으로 이어지게 데이터를 넣는 인터페이스를 짚어 준다.
+    assert "X1 이 인터페이스 뭐가 문제야?" in text
+
+
+def test_mcp_find_table_interfaces_says_unknown(monkeypatch: Any):
+    monkeypatch.setattr(iferr, "IFERR_TABLE_SQL", "")
+
+    async def call(c: Client) -> Any:
+        return await c.call_tool("find_table_interfaces", {"table": "IF_ORD"})
+
+    text = _run(_with_client(call)).content[0].text
+    assert "확인 불가" in text and "없다는 뜻이 아니다" in text

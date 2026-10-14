@@ -26,6 +26,42 @@ EAIIF0001234: found (근거 rows-found)
 짚어 준다 — 소형 모델은 툴을 이어 부르지 못한다. `status` 가 `unknown` 이면
 '테이블 없음'이 아니라 '확인 못 함'이다(DB·마스터 설정 확인).
 
+## 테이블과 연결된 인터페이스 — `find_table_interfaces`
+
+위의 반대 방향이다. 테이블 이름을 주면 마스터에서 그 테이블을 **출발 또는 도착**으로
+쓰는 인터페이스를 찾는다. 메일·LLM 은 부르지 않는다.
+
+```bat
+python agents\iferr\agent.py --ifs IF_ORD
+```
+```
+IF_ORD: found (근거 rows-found)
+  [도착] EAIIF0001234  [SAP] ZORDER → [ERP] IF_ORD (매일 08:30, 12:00)
+  [출발] EAIIF0005678  [ERP] IF_ORD → [BW] ZORDER_BAK (매일 23:00)
+```
+
+- **도착(들어옴)이 먼저** 나온다 — 테이블이 비었을 때 볼 인터페이스다. 챗봇 답 끝에
+  그 IFID 로 오류를 이어 물을 문장("EAIIF0001234 이 인터페이스 뭐가 문제야?")을 짚어 준다.
+- 마스터 값에 스키마가 붙어 있어도(`EMP.IF_ORD`) 잡는다. 사용자가 `[ERP] EMP.IF_ORD`
+  처럼 물어도 이름 `IF_ORD` 로 찾고, 뗀 앞부분을 답에 알린다. 대소문자는 가리지 않는다.
+- 이름이 **정확히 같은** 테이블만 찾는다. `IF_ORD_TMP` 는 `IF_ORD` 로 잡히지 않는다.
+  SQL 에 `LIKE` 를 쓰지 않는 이유다 — `_` 가 한 글자 와일드카드라 엉뚱한 이름이 걸린다.
+- SQL 은 `IFERR_MASTER_TABLE`·`IFERR_MASTER_FIELDS` 로 자동으로 만들어진다
+  (`src_table`·`tar_table` 중 하나는 있어야 한다). 직접 쓰려면 `IFERR_TABLE_SQL`
+  (바인드 `:tname` = 대문자 이름, `:dotname` = `'.'` + 이름).
+
+| status | 뜻 |
+|---|---|
+| `found` | 그 테이블을 쓰는 인터페이스가 있다 |
+| `missing` | 마스터에 그 테이블을 쓰는 행이 **없다** |
+| `unknown` | **확인 못 했다** — SQL/DB 미설정, 조회 실패, 테이블 이름으로 볼 수 없는 입력, 행은 왔는데 이름이 안 맞음(`name-mismatch`) |
+
+테이블을 **읽고 쓰는 프로그램**은 이 툴이 아니라 `analyze_table_impact` 다.
+툴 선택 실측(`qwen3.5:4b`, 2회씩): "X 테이블 관련 인터페이스 알려줘",
+"X 테이블에 데이터 넣는 I/F 뭐야?", "X 테이블 쓰는 인터페이스 뭐 있어?",
+"X 테이블은 어떤 IFID 랑 연결돼?" 는 이 툴로, 영향도·어디서 쓰여·IFID→테이블·변수
+사용처 질문은 원래 툴로 갔다(18/18).
+
 ## 오류 메일 판정 — LLM 이 읽고, 키워드가 받친다
 
 기본(`IFERR_MAIL_JUDGE = "llm"`)은 LLM 이 메일마다 **오류 알림인가**와
@@ -399,6 +435,8 @@ SQL 이 비어 있으면 키 추출까지만 하고 **"확인 불가"** 로 남�
 | 툴 | 등급 | 메일 | DB | 무엇 |
 |---|---|---|---|---|
 | `check_interface_errors(period, key)` | combo | ○ | ○ | 전체를 한 번에 |
+| `find_interface_tables(key)` | combo | ✕ | ○ | IFID → 출발·도착 테이블 |
+| `find_table_interfaces(table)` | combo | ✕ | ○ | 테이블 → 그 테이블을 쓰는 인터페이스 |
 | `list_error_mails(period)` | step | ○ | ✕ | 메일이 오긴 왔는지 |
 | `extract_interface_keys(text)` | step | ✕ | ✕ | 붙여 넣은 본문에서 키만 |
 | `lookup_interface(key)` | step | ✕ | ○ | 키를 이미 알 때 |
@@ -410,6 +448,7 @@ SQL 이 비어 있으면 키 추출까지만 하고 **"확인 불가"** 로 남�
 | 리소스 | 무엇 |
 |---|---|
 | `iferr://detail/{key}` | `detail="full"` — 메일 목록 + 조회 행 전부 |
+| `iferr://table/{table}` | 테이블을 쓰는 인터페이스 전부 (챗봇 답은 15개까지만) |
 
 annotations: `readOnly=true`, `destructive=false`
 

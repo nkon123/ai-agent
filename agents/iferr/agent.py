@@ -45,6 +45,7 @@ from config import (  # noqa: E402
     IFERR_MAX_ROWS,
     IFERR_SQL,
     IFERR_STATUS_COLUMNS,
+    IFERR_TABLE_SQL,
     JUDGE_MODEL,
     MAIL_LOOKBACK_HOURS,
     MAIL_SUBJECT_KEYWORDS,
@@ -56,6 +57,7 @@ from core import oracle  # noqa: E402
 from core.cache import cached  # noqa: E402
 from core.outlook import Mail, MailUnavailable, read_mails  # noqa: E402
 from core.progress import notify  # noqa: E402
+from core.sqlstmt import bare_table_name  # noqa: E402
 from core.text import ident_pattern  # noqa: E402
 
 Detail = Literal["full", "summary", "minimal"]
@@ -678,7 +680,7 @@ def assess(state: IfErrState) -> IfErrState:
         flows = _master_summary(rows.get("header") or [])
         parts: list[str] = []
         if flows:
-            parts.append(" / ".join(_flow_text(f) for f in flows[:3]))
+            parts.append(" / ".join(flow_text(f) for f in flows[:3]))
             if len(flows) > 3:
                 parts.append(f"외 {len(flows) - 3}건")
         # header 는 스케줄 때문에 행이 여러 개로 나온다. 경로를 이미 보여
@@ -802,7 +804,7 @@ def system_table(system: str, table: str) -> str:
     return table or (f"[{system}]" if system else "")
 
 
-def _flow_text(m: dict[str, Any]) -> str:
+def flow_text(m: dict[str, Any]) -> str:
     """'출발 → 도착 (스케줄)'을 한 줄로. 영향 범위를 바로 읽을 수 있게."""
     src = system_table(m.get("src_sys", ""), m.get("src_table", ""))
     tar = system_table(m.get("tar_sys", ""), m.get("tar_table", ""))
@@ -1052,6 +1054,93 @@ def interface_tables(key: str) -> dict[str, Any]:
             "tables": tables, "flows": flows, "warnings": warnings}
 
 
+# 오라클 테이블 이름. 바인드로 넘기므로 안전 검사가 아니라 '테이블 이름으로 볼 수
+# 있는가' 검사다 — 문장째 들어온 것을 조회해 '없음'으로 답하지 않게.
+_TABLE_NAME = re.compile(r"^[A-Z][A-Z0-9_$#]{0,127}$")
+
+
+def clean_table_name(raw: str) -> tuple[str, str]:
+    """사용자·모델이 준 테이블 이름 → (대문자 이름, 떼어 낸 앞부분).
+
+    '[ERP] TB_ORDER'(화면 표기), 'EMP.TB_ORDER'(스키마), 'tb_order 테이블' 처럼
+    들어온다. 시스템 표기와 뒤에 붙은 말을 떼고 스키마는 bare_table_name 으로 뗀다.
+    """
+    s = re.sub(r"^\s*\[[^\]]*\]\s*", "", raw or "")
+    s = (s.split() or [""])[0]
+    name, qualifier = bare_table_name(s)
+    return name.upper(), qualifier
+
+
+def table_interfaces(table: str) -> dict[str, Any]:
+    """테이블 하나를 출발·도착으로 쓰는 인터페이스 — 마스터를 거꾸로 찾는다.
+
+    find_interface_tables(IFID → 테이블)의 반대 방향이다. 메일·LLM 은 부르지 않는다.
+    마스터 행을 IFID 로 묶는 것은 정방향과 같은 _master_summary 를 쓴다.
+
+    돌려주는 것:
+        status      found | missing | unknown  — '없다'와 '확인 못 했다'를 구분한다
+        interfaces  [{id, roles[source|target], src_sys, src_table, tar_sys,
+                      tar_table, schedule}]  도착(데이터가 들어오는 쪽)이 먼저
+    """
+    name, qualifier = clean_table_name(table)
+    out: dict[str, Any] = {"table": name, "qualifier": qualifier, "status": "unknown",
+                           "rule": "", "decided_by": "fallback", "interfaces": [],
+                           "warnings": []}
+    if not name:
+        return {**out, "rule": "no-table", "warnings": ["테이블 이름이 비어 있다"]}
+    if not _TABLE_NAME.match(name):
+        return {**out, "rule": "bad-name",
+                "warnings": [f"'{name}' 은(는) 테이블 이름으로 볼 수 없다 — 확인 필요"]}
+    if not IFERR_TABLE_SQL.strip():
+        return {**out, "rule": "sql-not-configured", "warnings": [
+            "테이블로 인터페이스를 찾는 SQL 이 없다 — 확인 필요 (config_local.py 의 "
+            "IFERR_MASTER_TABLE 과 IFERR_MASTER_FIELDS 의 src_table/tar_table, "
+            "또는 IFERR_TABLE_SQL)"]}
+    if not oracle.is_configured():
+        return {**out, "rule": "db-not-configured",
+                "warnings": ["Oracle 설정이 비어 있다 — 확인 필요 (config.ORACLE_DSN)"]}
+
+    try:
+        rows = oracle.query(IFERR_TABLE_SQL, {"tname": name, "dotname": "." + name})
+    except Exception as e:
+        # 조회 실패를 빈 결과로 넘기면 '쓰는 인터페이스 없음'으로 읽힌다.
+        return {**out, "rule": "query-failed",
+                "warnings": [f"마스터 조회 실패 — 확인 필요: {type(e).__name__}: {e}"]}
+
+    warnings: list[str] = []
+    if len(rows) > IFERR_MAX_ROWS:
+        warnings.append(f"마스터 행이 {IFERR_MAX_ROWS}개를 넘어 앞부분만 봤다 — 더 있을 수 있다")
+        rows = rows[:IFERR_MAX_ROWS]
+
+    interfaces: list[dict[str, Any]] = []
+    unmatched = 0
+    for f in _master_summary(rows):
+        # SQL 이 이미 걸렀지만 직접 쓴 SQL 은 넓게 잡을 수 있다. 어느 쪽인지 다시 본다.
+        roles = [role for role, col in (("target", "tar_table"), ("source", "src_table"))
+                 if bare_table_name(f.get(col) or "")[0].upper() == name]
+        if not roles:
+            unmatched += 1
+            continue
+        interfaces.append({"id": f["id"], "roles": roles, "src_sys": f["src_sys"],
+                           "src_table": f["src_table"], "tar_sys": f["tar_sys"],
+                           "tar_table": f["tar_table"], "schedule": f.get("schedule", "")})
+    if unmatched:
+        warnings.append(f"조회된 인터페이스 {unmatched}건은 출발·도착 테이블이 "
+                        f"{name} 과(와) 달라 뺐다 — IFERR_TABLE_SQL 확인")
+    # 도착(이 테이블에 데이터를 넣는 쪽)이 먼저다 — 테이블이 비었을 때 볼 곳이다.
+    interfaces.sort(key=lambda i: ("target" not in i["roles"], i["id"]))
+
+    if interfaces:
+        return {**out, "status": "found", "rule": "rows-found", "decided_by": "rule",
+                "interfaces": interfaces, "warnings": warnings}
+    if unmatched:
+        # 행은 왔는데 이름이 안 맞았다 — '없다'고 단정할 수 없다.
+        return {**out, "rule": "name-mismatch", "warnings": warnings}
+    # 마스터에 이 테이블을 쓰는 행이 정말 없다. 이건 '없다'가 맞다.
+    return {**out, "status": "missing", "rule": "no-rows", "decided_by": "rule",
+            "warnings": warnings}
+
+
 def doctor(hours: int | None = None) -> list[tuple[str, bool, str]]:
     """설정부터 DB 조회까지 순서대로 점검한다. [(단계, 성공, 메시지)]
 
@@ -1150,6 +1239,8 @@ if __name__ == "__main__":
     ap.add_argument("--key", default="", help="메일을 읽지 않고 이 키만 확인")
     ap.add_argument("--tables", default="", metavar="IFID",
                     help="이 IFID 가 참조하는 테이블(출발·도착)만 본다. 메일을 읽지 않는다")
+    ap.add_argument("--ifs", default="", metavar="TABLE",
+                    help="이 테이블을 출발·도착으로 쓰는 인터페이스. 메일을 읽지 않는다")
     ap.add_argument("--detail", choices=["full", "summary", "minimal"], default="full")
     # 아래 셋은 진단용이다. DB 를 건드리지 않는다.
     ap.add_argument("--folders", action="store_true",
@@ -1216,6 +1307,16 @@ if __name__ == "__main__":
         for w in t["warnings"]:
             print(f"  [확인 필요] {w}")
         raise SystemExit(0 if t["status"] == "found" and t["tables"] else 1)
+
+    if args.ifs:
+        t = table_interfaces(args.ifs)
+        print(f"{t['table']}: {t['status']} (근거 {t['rule'] or '-'})")
+        for i in t["interfaces"]:
+            role = "/".join("도착" if r == "target" else "출발" for r in i["roles"])
+            print(f"  [{role}] {i['id']}  {flow_text(i)}")
+        for w in t["warnings"]:
+            print(f"  [확인 필요] {w}")
+        raise SystemExit(0 if t["status"] == "found" else 1)
 
     if args.check_db:
         from core.oracle import check_connection

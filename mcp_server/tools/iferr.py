@@ -6,6 +6,7 @@
 
     combo  check_interface_errors   메일 → 키 → DB → 영향까지 한 번에
     combo  find_interface_tables    IFID 하나 → 참조 테이블(출발·도착) (메일 안 읽음)
+    combo  find_table_interfaces    테이블 하나 → 그 테이블을 쓰는 인터페이스 (메일 안 읽음)
     step   list_error_mails         메일만 (DB 안 붙음)
     step   extract_interface_keys   텍스트 → 키 (메일도 DB 도 안 붙음)
     step   lookup_interface         키 하나만 DB 확인 (메일 안 읽음)
@@ -29,8 +30,15 @@ from mcp.server.mcpserver import Context
 
 from config import MAIL_LOOKBACK_HOURS
 
-from agents.iferr import extract_keys, interface_tables, list_mails, lookup_key, run_iferr
-from agents.iferr.agent import parse_period, system_table
+from agents.iferr import (
+    extract_keys,
+    interface_tables,
+    list_mails,
+    lookup_key,
+    run_iferr,
+    table_interfaces,
+)
+from agents.iferr.agent import flow_text, parse_period, system_table
 from core.sqlstmt import bare_table_name
 
 from . import mcp, register
@@ -170,7 +178,8 @@ def iferr_detail(key: str) -> str:
         "find_interface_tables 는 인터페이스 ID(IFID)를 주고 그 인터페이스가 참조하는 "
         "테이블(출발·도착)을 물을 때만 쓴다. "
         "테이블 이름을 주고 '어디서 쓰여?', '영향도', '데이터 안 들어오면 뭐가 문제' 를 "
-        "물으면 이 툴이 아니라 analyze_table_impact 다. 오류·실패 여부는 "
+        "물으면 이 툴이 아니라 analyze_table_impact 다. 테이블 이름을 주고 관련 "
+        "인터페이스를 물으면 find_table_interfaces 다. 오류·실패 여부는 "
         "check_interface_errors 다. key 에는 사용자가 말한 ID 를 그대로 넣어라. "
         "status 가 unknown 이면 '테이블 없음'이 아니라 '확인하지 못했다'는 뜻이다."
     ),
@@ -222,6 +231,77 @@ def find_interface_tables(key: str) -> str:
                 f"(예: \"{targets[0]} 테이블 영향도 조사해줘\")"
             )
         line = "\n".join(lines)
+    if r["warnings"]:
+        line += "\n확인 필요: " + "; ".join(r["warnings"])
+    return line
+
+
+@mcp.resource(
+    "iferr://table/{table}",
+    name="iferr_table_interfaces",
+    title="테이블을 쓰는 인터페이스",
+    description="테이블 하나를 출발·도착으로 쓰는 인터페이스 전체 JSON.",
+    mime_type="application/json",
+)
+def iferr_table_interfaces(table: str) -> str:
+    """화면 표시용 전체 데이터. LLM 컨텍스트를 거치지 않는다."""
+    return json.dumps(table_interfaces(table), ensure_ascii=False, default=str)
+
+
+_TABLE_IFS_SHOWN = 15
+
+
+@register(
+    label="테이블 관련 인터페이스 (iferr)",
+    view="text",
+    detail_uri="iferr://table/{table}",
+    hint=(
+        "find_table_interfaces 는 테이블 이름을 주고 그 테이블과 연결된 인터페이스"
+        "(I/F, IFID, 연계)를 물을 때 쓴다 — 이 테이블에 데이터를 넣는/가져가는 "
+        "인터페이스. 테이블을 쓰는 프로그램·소스·영향도는 analyze_table_impact 다. "
+        "table 에는 테이블 이름만 넣어라. "
+        "status 가 unknown 이면 '인터페이스 없음'이 아니라 '확인하지 못했다'는 뜻이다."
+    ),
+    examples=(
+        "IF_ORDER_TMP 테이블 관련 인터페이스 알려줘",
+        "IF_ORDER_TMP 테이블에 데이터 넣는 I/F 뭐야?",
+    ),
+    read_only=True,
+    tier="combo",
+)
+def find_table_interfaces(table: str) -> str:
+    """테이블 이름으로 그 테이블을 출발·도착으로 쓰는 인터페이스(IFID)를 찾는다.
+
+    '이 테이블 관련 인터페이스', '이 테이블에 넣는 I/F' 같은 질문에 쓴다.
+    메일은 읽지 않고 인터페이스 마스터만 조회한다. 테이블을 쓰는 프로그램은
+    이 툴이 아니라 analyze_table_impact 가 답한다.
+    table 에는 테이블 이름만 넣는다.
+    """
+    r = table_interfaces(table)
+    name = r["table"] or table
+    if r["status"] == "unknown":
+        line = f"{name}: 확인 불가 — 인터페이스를 확인하지 못했다(없다는 뜻이 아니다)"
+    elif r["status"] == "missing":
+        line = (f"{name}: 인터페이스 마스터에 이 테이블을 출발·도착으로 쓰는 인터페이스가 "
+                "없다. 이름을 확인할 것")
+    else:
+        ifs = r["interfaces"]
+        n_in = sum(1 for i in ifs if "target" in i["roles"])
+        lines = [f"{name} 테이블과 연결된 인터페이스 {len(ifs)}개 "
+                 f"(들어옴 {n_in}, 나감 {len(ifs) - n_in}, 인터페이스 마스터 기준)"]
+        for i in ifs[:_TABLE_IFS_SHOWN]:
+            role = "/".join("들어옴" if x == "target" else "나감" for x in i["roles"])
+            lines.append(f"- {i['id']} [{role}]: {flow_text(i)}")
+        if len(ifs) > _TABLE_IFS_SHOWN:
+            lines.append(f"- 외 {len(ifs) - _TABLE_IFS_SHOWN}개")
+        # 소형 모델은 툴을 이어 부르지 못한다. 다음 질문을 사용자가 할 수 있게
+        # 이 테이블에 데이터를 넣는 인터페이스(비었을 때 볼 곳)를 짚어 준다.
+        first = next((i["id"] for i in ifs if "target" in i["roles"]), ifs[0]["id"])
+        lines.append(f"오류 여부는 check_interface_errors 로 확인할 수 있다 "
+                     f"(예: \"{first} 이 인터페이스 뭐가 문제야?\")")
+        line = "\n".join(lines)
+    if r["qualifier"]:
+        line += f"\n(앞에 붙은 '{r['qualifier']}' 은(는) 떼고 이름 {name} 으로 찾았다)"
     if r["warnings"]:
         line += "\n확인 필요: " + "; ".join(r["warnings"])
     return line

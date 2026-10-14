@@ -19,6 +19,7 @@ from . import mcp, register, report_while
         "analyze_table_impact 는 테이블에 관한 질문에 쓴다 — 테이블이 어디서 쓰이는지, "
         "테이블 영향도, 테이블을 쓰는 프로그램, 테이블에 데이터가 안 들어오면 무엇이 "
         "문제인지. 변수·함수 사용처는 find_usage 다. "
+        "테이블과 연결된 인터페이스(I/F, IFID)는 find_table_interfaces 다. "
         "table 에는 테이블 이름만 넣어라. "
         "쓰기(write)가 있는 프로그램이 먼저 영향을 받는다."
     ),

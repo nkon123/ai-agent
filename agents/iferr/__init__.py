@@ -9,6 +9,7 @@ from .agent import (
     match_info,
     matched_keyword,
     run_iferr,
+    table_interfaces,
 )
 
 __all__ = [
@@ -17,6 +18,7 @@ __all__ = [
     "list_mails",
     "lookup_key",
     "interface_tables",
+    "table_interfaces",
     "matched_keyword",
     "match_info",
     "check_subject_rule",

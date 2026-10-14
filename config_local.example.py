@@ -143,6 +143,15 @@ IFERR_MASTER_FIELDS = {
 #     SELECT IFID, SRCSYS, TARSYS, SRCTNAME, TARTNAME, SCH_DAY, SCH_H, SCH_M
 #       FROM {schema}IF_MST
 #      WHERE IFID = :if_key
+#
+# 같은 이름들로 '테이블 → 인터페이스' 역방향 SQL 도 만들어진다(find_table_interfaces).
+# src_table·tar_table 이 있어야 한다. 마스터 값에 스키마가 붙어 있어도('EMP.TB_ORDER') 잡는다.
+#     SELECT IFID, ... FROM {schema}IF_MST
+#      WHERE UPPER(SRCTNAME) = :tname OR SUBSTR(UPPER(SRCTNAME), -LENGTH(:dotname)) = :dotname
+#         OR UPPER(TARTNAME) = :tname OR SUBSTR(UPPER(TARTNAME), -LENGTH(:dotname)) = :dotname
+#      ORDER BY IFID
+# 직접 쓰려면(바인드 :tname = 대문자 테이블 이름, :dotname = '.' + 이름):
+# IFERR_TABLE_SQL = "SELECT ... FROM {schema}IF_MST WHERE ..."
 
 # 자동 생성으로 부족하면 SQL 을 직접 쓴다. 이쪽이 우선한다.
 # 바인드 이름은 :if_key 고정, {schema} 는 ORACLE_SCHEMA 로 치환된다.

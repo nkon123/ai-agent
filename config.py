@@ -293,6 +293,12 @@ IFERR_MASTER_FIELDS: Dict[str, str] = {
     "sch_m": _env_str("IFERR_FIELD_SCH_M", ""),       # 분
 }
 
+# 테이블 → 그 테이블을 출발·도착으로 쓰는 인터페이스 (find_table_interfaces).
+# 비워 두면 위 IFERR_MASTER_TABLE/FIELDS 로 자동 생성한다(src_table·tar_table 필요).
+# 직접 쓸 때 바인드는 :tname (대문자 테이블 이름) 과 :dotname ('.' + 이름,
+# 마스터 값에 스키마가 붙은 'EMP.TB_ORDER' 를 잡는 데 쓴다).
+IFERR_TABLE_SQL: str = _env_str("IFERR_TABLE_SQL", "")
+
 # 조회 결과에서 상태로 볼 컬럼 후보. 있으면 값별로 집계해 보여준다.
 # 스키마를 몰라도 동작하게 하기 위한 장치다.
 IFERR_STATUS_COLUMNS: tuple[str, ...] = tuple(
@@ -581,12 +587,54 @@ def build_master_sql(
     )
 
 
+def build_master_table_sql(table: str, fields: Mapping[str, str]) -> str:
+    """테이블 이름으로 마스터를 거꾸로 찾는 SQL. 값은 언제나 바인드로 들어간다.
+
+    출발(src_table)·도착(tar_table) 중 설정된 컬럼을 모두 본다. 둘 다 없으면
+    빈 문자열 — 거꾸로 찾을 방법이 없다.
+
+    마스터 값에 스키마가 붙어 있기도 하다('EMP.TB_ORDER'). 끝이 '.TB_ORDER' 인지를
+    SUBSTR 로 비교한다. LIKE '%.' || :tname 은 쓰지 않는다 — 테이블 이름의 '_' 가
+    한 글자 와일드카드라 TB_ORDER 가 TBXORDER 까지 잡는다.
+    """
+    tab = _ident(table, "테이블")
+    id_col = _ident(fields.get("id", ""), "id 컬럼")
+    name_cols = [
+        _ident(fields[k], f"{k} 컬럼")
+        for k in ("src_table", "tar_table")
+        if str(fields.get(k, "")).strip()
+    ]
+    if not name_cols:
+        return ""
+    cols: list[str] = []
+    for c in [id_col] + [
+        _ident(v, f"{k} 컬럼") for k, v in fields.items() if k != "id" and str(v).strip()
+    ]:
+        if c not in cols:
+            cols.append(c)
+    cond = "\n    OR ".join(
+        f"UPPER({c}) = :tname OR SUBSTR(UPPER({c}), -LENGTH(:dotname)) = :dotname"
+        for c in dict.fromkeys(name_cols)
+    )
+    return (
+        f"SELECT {', '.join(cols)}\n"
+        f"  FROM {{schema}}{tab}\n"
+        f" WHERE {cond}\n"
+        f" ORDER BY {id_col}"
+    )
+
+
 IFERR_MASTER_SQL_ERROR: str = ""
-if not IFERR_SQL["header"].strip() and IFERR_MASTER_TABLE.strip():
+if IFERR_MASTER_TABLE.strip():
     try:
-        IFERR_SQL["header"] = build_master_sql(
-            IFERR_MASTER_TABLE, IFERR_MASTER_FIELDS
-        )
+        if not IFERR_SQL["header"].strip():
+            IFERR_SQL["header"] = build_master_sql(
+                IFERR_MASTER_TABLE, IFERR_MASTER_FIELDS
+            )
+        if not IFERR_TABLE_SQL.strip():
+            IFERR_TABLE_SQL = build_master_table_sql(
+                IFERR_MASTER_TABLE, IFERR_MASTER_FIELDS
+            )
     except ValueError as e:
         # 조용히 넘기면 '조회 SQL 미설정'으로만 보여 원인을 못 찾는다.
         IFERR_MASTER_SQL_ERROR = str(e)
@@ -640,6 +688,9 @@ def describe() -> str:
         + (f"  [{IFERR_MASTER_SQL_ERROR}]" if IFERR_MASTER_SQL_ERROR else ""),
         f"  IFERR_SQL    : "
         + (", ".join(k for k, v in IFERR_SQL.items() if v.strip()) or "(미설정 — 조회 불가)"),
+        f"  테이블→IF    : "
+        + ("설정됨" if IFERR_TABLE_SQL.strip()
+           else "(미설정 — IFERR_MASTER_FIELDS 의 src_table/tar_table)"),
         f"  MCP          : {MCP_PROTOCOL_VERSION} / {MCP_TRANSPORT}"
         + (f" → {MCP_SERVER_URL}" if MCP_TRANSPORT != "stdio" else " (python -m mcp_server)"),
         f"  SERVER       : http://{HOST}:{PORT} (debug={DEBUG})",
