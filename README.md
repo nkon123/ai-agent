@@ -141,6 +141,7 @@ samples/src/        usage 를 바로 돌려 볼 예제 소스 (함정 포함)
 samples/mail/       iferr 를 Outlook 없이 돌려 볼 예제 메일
 samples/colimpact/  컬럼 영향도 평가용 소스 (같은 이름 컬럼이 두 테이블에 있다)
 samples/demo/       발표 데모 — 가짜 마스터, 오늘 날짜 메일 생성, run_demo.bat
+docs/presentation/  발표 자료 — deck.html 을 브라우저로 연다 (← → 넘기기, N 노트, F 전체 화면, 인쇄하면 PDF)
 mcp_server/         MCP 서버 (툴 계층)
   __main__.py       python -m mcp_server
   tools/            MCP 툴 껍데기 + 자동 등록 레지스트리
