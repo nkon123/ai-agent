@@ -319,6 +319,13 @@
 <img src="img/demo-source.png" alt="컬럼 영향도 그리드 위에 소스 팝업이 뜬 화면: ord_join.sql 16번 줄이 강조되고 ORD_NO 가 표시됨" style="width:1048px;height:674px;object-fit:contain;border-radius:24px;background:#FFFFFF;box-shadow:0 20px 60px rgba(0,0,0,0.12)">
 <aside>표로 보기에서는 줄마다 판정과 근거, 규칙 추정이 함께 나옵니다. 규칙과 LLM 이 갈린 줄은 영향 없음이 아니라 확인 필요로 남습니다. 의심되는 줄을 더블클릭하면 그 줄 앞뒤 소스가 줄 번호와 함께 뜨고, 해당 줄과 컬럼 이름이 강조됩니다.</aside>
 </section>
+<section class="slide" id="live" data-transition="fade" style="background:radial-gradient(ellipse at 22% 82%, #1E2A55 0%, #0B0B10 58%);color:#F5F5F7;font-family:'Noto Sans KR', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:36px">
+<p style="font-size:28px;font-weight:500;color:#8E8E99;letter-spacing:1px;text-align:center">실시연</p>
+<h1 style="font-size:112px;font-weight:700;line-height:1.1;letter-spacing:-3px;text-align:center;background:linear-gradient(90deg, #4FA3FF 0%, #A77BFF 55%, #FF7AB6 100%);background-clip:text;-webkit-text-fill-color:transparent">직접 보여 드리겠습니다.</h1>
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:56px;font-weight:600;line-height:1.3;text-align:center;color:#FFFFFF;background:rgba(255,255,255,0.08);border:2px solid rgba(138,184,255,0.55);border-radius:999px;padding:24px 64px;box-shadow:0 0 60px rgba(79,163,255,0.25)"><a target="_blank" rel="noopener" href="http://localhost:5000" style="color:#FFFFFF">http://localhost:5000</a></p>
+<p style="font-size:28px;line-height:1.5;color:#A1A1AA;text-align:center">samples\demo\run_demo.bat 실행 후 위 주소를 엽니다</p>
+<aside>이제 실제 화면으로 보여 드리겠습니다. 미리 run_demo.bat 을 실행해 두고, 링크를 눌러 챗봇을 엽니다. 시연 순서는 오늘 인터페이스 오류 확인, 표로 보기, 소스 보기, 메일 지정입니다.</aside>
+</section>
 </div></div>
 <div id="notes"></div>
 <div id="bar">
@@ -361,7 +368,7 @@ document.getElementById("prev").onclick = () => show(cur - 1);
 document.getElementById("next").onclick = () => show(cur + 1);
 document.getElementById("note-btn").onclick = toggleNotes;
 document.getElementById("stage").addEventListener("click", (e) => {
-  if (!e.target.closest("button")) show(cur + (e.clientX < innerWidth / 3 ? -1 : 1));
+  if (!e.target.closest("button, a")) show(cur + (e.clientX < innerWidth / 3 ? -1 : 1));
 });
 fit();
 show((parseInt(location.hash.slice(1), 10) || 1) - 1);
