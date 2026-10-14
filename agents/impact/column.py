@@ -10,6 +10,13 @@
 찾은 줄은 판정과 상관없이 전부 남긴다. 어느 프로그램에서 이름이 나왔는지는
 사람이 다 봐야 하고, 실제 영향 여부만 판정으로 가른다.
 
+테이블을 쓰는 SQL 문장 중 컬럼 이름이 없는 문장도 '테이블만 씀' 행으로 남긴다.
+테이블 영향도에는 나오는데 컬럼 영향도에서 사라지면, 안 본 건지 안 쓰는 건지
+구분이 안 된다. 컬럼 이름 없이 컬럼을 건드리는 문장은 규칙으로 가른다:
+    INSERT INTO T VALUES/SELECT (컬럼 목록 없음)  → 영향 있음 (모든 컬럼에 넣는다)
+    SELECT * / T.*                              → 확인 필요 (읽은 값을 쓰는지 모른다)
+    그 밖                                        → 영향 없음 (이 문장은 컬럼을 안 쓴다)
+
 판정(verdict)은 세 값이다 — '아니다'와 '모른다'를 섞지 않는다.
     yes      영향 있음   그 테이블의 컬럼으로 쓰였다
     no       영향 없음   주석이거나, 다른 테이블의 같은 이름 컬럼·변수다
@@ -67,6 +74,7 @@ USAGE_LABEL = {
 PLACE_LABEL = {
     "comment": "주석", "string": "문자열", "same-stmt": "테이블과 같은 문장",
     "other-code": "다른 코드", "host-var": "호스트 변수",
+    "table-only": "테이블만 씀(컬럼 없음)",
 }
 _XML_TAG = re.compile(r"<[^>]*>")
 
@@ -176,6 +184,34 @@ def settle(body: str, line_idx: int, table: str, col_pat: re.Pattern[str]) -> di
     return None
 
 
+# 컬럼 이름 없이 컬럼을 건드리는 모양. 문장 본문(주석·문자열 지움)에 쓴다.
+_STAR = re.compile(r"(?is)\bSELECT\s+(?:DISTINCT\s+|ALL\s+)?(\*)|([A-Za-z_][\w$#]*)\s*\.\s*\*")
+_INSERT_NO_LIST = r"(?is)\bINSERT\s+INTO\s+(?:\"?[A-Za-z_][\w$#]*\"?\.){{0,2}}\"?{t}\"?\s+(VALUES|SELECT|WITH)\b"
+
+
+def table_only(sql: str, lang: str, table: str) -> dict[str, str]:
+    """테이블은 쓰지만 컬럼 이름이 없는 문장의 판정. settle() 과 같은 모양을 돌려준다."""
+    try:
+        body = strip_comments(sql, lang, mask_strings=True)
+    except ValueError:
+        body = sql
+    if lang == "xml":
+        body = _blank(body, _XML_TAG)
+    t = table.upper()
+    if re.search(_INSERT_NO_LIST.format(t=re.escape(t)), body):
+        return {"verdict": "yes", "usage": "insert", "rule": "insert-all-columns",
+                "reason": "컬럼 목록 없이 INSERT 한다 — 모든 컬럼(이 컬럼 포함)에 값을 넣는다"}
+    refs = table_refs(body)
+    for m in _STAR.finditer(body):
+        alias = (m.group(2) or "").upper()
+        if not alias or refs.get(alias) == t:
+            return {"verdict": "unknown", "usage": "select", "rule": "select-star",
+                    "reason": f"{m.group(0).strip()} 로 컬럼을 이름 없이 읽는다 — "
+                              "프로그램이 이 값을 쓰는지 확인 필요"}
+    return {"verdict": "no", "usage": "none", "rule": "column-absent",
+            "reason": "테이블을 쓰는 문장이지만 이 컬럼은 나오지 않는다"}
+
+
 def find_hits(table: str, column: str, roots: list[tuple[str, str]]) -> dict[str, Any]:
     """테이블이 나오는 파일에서 컬럼이 나온 줄을 전부 찾아 규칙으로 분류한다.
 
@@ -208,10 +244,36 @@ def find_hits(table: str, column: str, roots: list[tuple[str, str]]) -> dict[str
         if not tab_pat.search(masked):
             continue
         table_files += 1
-        if not col_pat.search(text):
+        raw_lines = text.splitlines()
+        # 테이블을 쓰는 문장 중 컬럼이 안 나오는 것 — 테이블 영향도와 같은 방식으로 자른다.
+        seen: set[int] = set()
+        for no, mk in enumerate(masked.splitlines(), start=1):
+            if not tab_pat.search(mk):
+                continue
+            stmt = statement_at(text, no, lang)
+            if stmt.start_line in seen:
+                continue
+            seen.add(stmt.start_line)
+            if col_pat.search(stmt.sql):
+                continue                    # 컬럼이 나온 줄은 아래에서 줄마다 본다
+            if len(hits) >= COLUMN_IMPACT_MAX_HITS:
+                truncated = True
+                break
+            info = classify(stmt.sql, table, lang)
+            s = table_only(stmt.sql, lang, table)
+            hits.append({
+                "root": root_of[path], "file": path, "program": Path(path).name, "lang": lang,
+                "line": no, "code": (raw_lines[no - 1] if no - 1 < len(raw_lines) else "").strip()[:300],
+                "start_line": stmt.start_line, "end_line": stmt.end_line,
+                "stmt_kind": info.kind, "table_role": info.role, "sql": stmt.sql,
+                "complete": stmt.complete, "place": "table-only",
+                "rule_verdict": s["verdict"], "rule": s["rule"], "settled": s,
+            })
+        if truncated or not col_pat.search(text):
+            if truncated:
+                break
             continue
 
-        raw_lines = text.splitlines()
         nc_lines = nocomment.splitlines()
         mk_lines = masked.splitlines()
         for no, raw in enumerate(raw_lines, start=1):
@@ -487,8 +549,8 @@ def _analyze_uncached(table: str, column: str, root: str = "") -> dict[str, Any]
         rule = "no-files"            # 루트별 '소스가 없다' 경고는 scan_roots 가 이미 냈다
     elif not found["table_files"]:
         rule = "no-table-hit"
-    elif not hits:
-        rule = "no-column-hit"
+    elif not any(h["place"] != "table-only" for h in hits):
+        rule = "no-column-hit"       # 테이블을 쓰는 문장(table-only 행)은 있다
     else:
         rule = "hits-found"
     return {**out, "files_scanned": found["files_scanned"], "table_files": found["table_files"],
@@ -512,6 +574,11 @@ def run_column_impact(table: str, column: str, root: str = "",
     base = {k: r[k] for k in ("table", "column", "qualifier", "root", "files_scanned",
                               "table_files", "rule", "decided_by", "warnings")}
     base["counts"] = counts_of(hits)
+    # 컬럼이 나온 줄과, 테이블은 쓰지만 컬럼이 없는 문장을 따로 센다. 테이블 영향도에는
+    # 나오는데 여기서 빠지면 '안 본 것'인지 '안 쓰는 것'인지 알 수 없다.
+    only = [h for h in hits if h["place"] == "table-only"]
+    base["table_only"] = len(only)
+    base["table_only_counts"] = counts_of(only)
     base["programs"] = sorted({h["program"] for h in hits})
     if detail == "summary":
         # 루트가 여럿이면 같은 파일 이름이 루트마다 있을 수 있다. 위치에 루트를 붙인다.
@@ -522,7 +589,7 @@ def run_column_impact(table: str, column: str, root: str = "",
 
         return {
             **base,
-            "hit_count": len(hits),
+            "hit_count": len(hits) - len(only),
             "places": [
                 f"{where(h)} {USAGE_LABEL[h['usage']]} — {h['code'][:80]}"
                 for h in hits if h["verdict"] == "yes"
@@ -564,7 +631,8 @@ def column_grid(table: str, column: str, root: str = "") -> dict[str, Any]:
     c = r["counts"]
     return {
         "title": f"{r['table']}.{r['column']} 컬럼 영향도",
-        "subtitle": (f"{r['root']} · 테이블을 쓰는 파일 {r['table_files']}개 · 찾은 줄 {len(rows)}개 "
+        "subtitle": (f"{r['root']} · 테이블을 쓰는 파일 {r['table_files']}개 · 컬럼이 나온 줄 "
+                     f"{len(rows) - r['table_only']}개 + 테이블만 쓰는 문장 {r['table_only']}개 "
                      f"(영향 있음 {c['yes']} / 확인 필요 {c['unknown']} / 영향 없음 {c['no']})"),
         "grid": {"columns": [{"key": k, "label": v} for k, v in GRID_COLUMNS], "rows": rows,
                  # 화면은 이 칸의 값으로 걸러 보기 버튼을 만들고 색을 입힌다.

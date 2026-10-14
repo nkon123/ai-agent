@@ -179,7 +179,7 @@ def incident_grid(period: str = "", key: str = "", subject: str = "") -> dict[st
         "title": "인터페이스 오류 영향도 — "
                  + (f"메일 '{r['picked_mail']['subject'][:40]}'" if r.get("picked_mail") else r["label"]),
         "subtitle": (f"메일 {r['mail_count']}통 · 오류 {len(r['cases'])}건 · 원인 컬럼 {len(impacts)}개 · "
-                     f"찾은 줄 {len(rows)}개 (영향 있음 {counts['yes']} / 확인 필요 "
+                     f"행 {len(rows)}개 (영향 있음 {counts['yes']} / 확인 필요 "
                      f"{counts['unknown']} / 영향 없음 {counts['no']})"),
         "grid": {"columns": [{"key": "ifid", "label": "IFID"}, {"key": "cause", "label": "원인"}]
                  + [{"key": k, "label": v} for k, v in GRID_COLUMNS],

@@ -99,6 +99,8 @@ def impact_detail(root: str, table: str) -> str:
     hint=(
         "analyze_column_impact 는 테이블의 특정 컬럼이 어디서 쓰이는지(컬럼 영향도)를 물을 때 "
         "쓴다. table 에는 테이블 이름, column 에는 컬럼 이름만 따로 넣어라. "
+        "테이블을 쓰는 문장 중 컬럼이 없는 것도 '테이블만 씀'으로 센다 — 컬럼 목록 없는 "
+        "INSERT 는 영향 있음, SELECT * 는 확인 필요다. "
         "컬럼 없이 테이블만 물으면 analyze_table_impact 다. "
         "답의 '확인 필요' 건수는 '영향 없음'이 아니다. 전체 목록은 답 아래 [표로 보기] 에 있다고 "
         "사용자에게 알려라."
@@ -116,7 +118,8 @@ async def analyze_column_impact(
     """테이블의 컬럼 하나가 소스 어디에서 실제로 쓰이는지(컬럼 영향도) 조사한다.
 
     테이블을 쓰는 파일에서 컬럼 이름이 나온 줄을 모두 찾고, 줄마다 그 테이블의
-    컬럼으로 쓰였는지(영향 있음/없음/확인 필요)를 판정한다.
+    컬럼으로 쓰였는지(영향 있음/없음/확인 필요)를 판정한다. 테이블을 쓰지만 컬럼
+    이름이 없는 문장도 함께 보인다(컬럼 목록 없는 INSERT·SELECT * 는 따로 판정).
     table 과 column 은 따로 넣는다. root 는 사용자가 특정 소스 루트를 말했을
     때만 넣는다 — 비우면 설정된 소스 루트 전부를 찾는다.
     """
@@ -130,17 +133,16 @@ async def analyze_column_impact(
     elif r["rule"] == "no-table-hit":
         line = (f"{name}: {r['root']} 소스({r['files_scanned']}개 파일)에서 테이블 {r['table']} 을 "
                 "쓰는 파일을 찾지 못했다")
-    elif r["rule"] == "no-column-hit":
-        line = (f"{name}: 테이블을 쓰는 파일 {r['table_files']}개에서 컬럼 {r['column']} 이 "
-                "나오지 않았다")
     else:
-        line = (f"{name} 컬럼 영향도 ({r['root']}, 테이블을 쓰는 파일 {r['table_files']}개에서 "
-                f"{r['hit_count']}줄 찾음): 영향 있음 {c['yes']} / 확인 필요 {c['unknown']} / "
-                f"영향 없음 {c['no']}")
+        found = (f"컬럼이 나온 줄 {r['hit_count']}개" if r["hit_count"]
+                 else f"컬럼 {r['column']} 이 나온 줄은 없음")
+        line = (f"{name} 컬럼 영향도 ({r['root']}, 테이블을 쓰는 파일 {r['table_files']}개 — "
+                f"{found}, 컬럼 없이 테이블만 쓰는 문장 {r['table_only']}개): "
+                f"영향 있음 {c['yes']} / 확인 필요 {c['unknown']} / 영향 없음 {c['no']}")
         for p in r["places"]:
             line += f"\n  - {p}"
         if c["yes"] > len(r["places"]):
-            line += f"\n  - 외 {c['yes'] - len(r['places'])}줄"
+            line += f"\n  - 외 {c['yes'] - len(r['places'])}곳"
         if r["unknown_places"]:
             line += "\n확인 필요 위치: " + ", ".join(r["unknown_places"])
         line += "\n전체 목록(프로그램·줄·판정 근거)은 답 아래 [표로 보기] 에서 볼 수 있다"

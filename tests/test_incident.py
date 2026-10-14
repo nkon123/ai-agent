@@ -147,7 +147,7 @@ def test_check_interface_errors_tells_the_whole_story():
     assert "최근 3일(72시간) 메일 2통에서 인터페이스 오류 2건" in text
     assert "마스터: 파일" in text
     assert "원인: IF_ORDER_TMP.ORD_NO 길이 초과(실제 25 > 최대 20) — 테이블은 오류 메시지에서" in text
-    assert "영향도: IF_ORDER_TMP.ORD_NO 을 쓰는 줄" in text and "[표로 보기]" in text
+    assert "영향도: IF_ORDER_TMP.ORD_NO 이 나온 줄" in text and "테이블만 쓰는 문장" in text and "[표로 보기]" in text
     data = json.loads(grid.contents[0].text)
     assert data["title"] == "인터페이스 오류 영향도 — 최근 3일"
     assert data["grid"]["rows"]

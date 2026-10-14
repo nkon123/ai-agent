@@ -24,6 +24,11 @@ python agents/incident/agent.py --subject "[연계오류] 주문 수신"   # 제
 `agents/iferr/README.md` 의 '메일 한 통 지정'. 실측: 데모 메일로 2.9초, 17줄 판정은 기간으로
 물었을 때와 같다.
 
+그리드에는 컬럼이 나온 줄(17줄) 말고도 `IF_ORDER_TMP` 를 쓰지만 `ORD_NO` 가 없는 문장
+(`OrdDao.java` 의 `SUM(TOTAL_AMT)`, `UPDATE IF_ORDER_TMP SET STATUS`)이 '테이블만 씀'으로 함께 나온다.
+컬럼 목록 없는 `INSERT INTO IF_ORDER_TMP VALUES` 가 있으면 그것이 '영향 있음'으로 잡힌다 —
+길이 초과를 일으킨 바로 그 프로그램일 수 있다. 규칙은 `agents/impact/README.md` 컬럼 영향도.
+
 ## 원인 컬럼과 테이블
 
 | 메일 내용 | 뽑는 방법 | 결과 |

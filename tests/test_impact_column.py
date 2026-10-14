@@ -315,11 +315,72 @@ def test_mcp_tool_summary_and_grid_resource():
     assert meta["view"] == "grid" and meta["detail_uri"] == "impact://column/{table}/{column}/{root}"
     assert tools["analyze_column_impact"].annotations.read_only_hint is True
     text = res.content[0].text
-    assert "IF_ORDER_TMP.TOTAL_AMT 컬럼 영향도" in text and "12줄 찾음" in text
+    assert "IF_ORDER_TMP.TOTAL_AMT 컬럼 영향도" in text and "컬럼이 나온 줄 12개" in text
     assert "[표로 보기]" in text
     data = json.loads(grid.contents[0].text)
     assert data["title"] == "IF_ORDER_TMP.TOTAL_AMT 컬럼 영향도"
     assert len(data["grid"]["rows"]) == 12
+
+
+TABLE_ONLY_SQL = (
+    "INSERT INTO IF_ORDER_TMP VALUES (:a, :b);\n"                          # 1
+    "SELECT * FROM IF_ORDER_TMP;\n"                                         # 2
+    "SELECT B.* FROM IF_ORDER_TMP A, ORD_HDR B WHERE A.K = B.K;\n"          # 3
+    "DELETE FROM IF_ORDER_TMP WHERE STATUS = 'Y';\n"                        # 4
+    "SELECT COUNT(*) FROM IF_ORDER_TMP;\n"                                  # 5
+    "INSERT INTO IF_ORDER_TMP (K, STATUS) VALUES (1, 'N');\n"               # 6
+)
+
+
+def test_table_statements_without_the_column_are_listed(tmp_path: Path, monkeypatch: Any):
+    """테이블 영향도에는 나오는데 컬럼이 없는 문장도 보인다 — 안 본 것과 안 쓰는 것을 가른다."""
+    (tmp_path / "a.sql").write_text(TABLE_ONLY_SQL, encoding="utf-8")
+    (tmp_path / "b.sql").write_text("SELECT TOTAL_AMT FROM IF_ORDER_TMP;\n", encoding="utf-8")
+    monkeypatch.setattr(usage_agent, "SOURCE_ROOTS", {"T": str(tmp_path)})
+    r = column.run_column_impact("IF_ORDER_TMP", "TOTAL_AMT", "T")
+    got = {(h["program"], h["line"]): (h["place"], h["verdict"], h["rule"]) for h in r["hits"]}
+    assert got == {
+        ("a.sql", 1): ("table-only", "yes", "insert-all-columns"),
+        ("a.sql", 2): ("table-only", "unknown", "select-star"),
+        ("a.sql", 3): ("table-only", "no", "column-absent"),     # B.* 는 다른 테이블
+        ("a.sql", 4): ("table-only", "no", "column-absent"),
+        ("a.sql", 5): ("table-only", "no", "column-absent"),     # COUNT(*) 는 SELECT * 가 아니다
+        ("a.sql", 6): ("table-only", "no", "column-absent"),     # 컬럼 목록에 없다
+        ("b.sql", 1): ("same-stmt", "yes", "single-table"),
+    }
+    assert all(h["decided_by"] == "rule" and h["reason"] for h in r["hits"])
+    assert r["table_files"] == 2 and r["rule"] == "hits-found"
+
+
+def test_table_only_rows_are_never_sent_to_llm(tmp_path: Path, monkeypatch: Any):
+    (tmp_path / "a.sql").write_text(TABLE_ONLY_SQL, encoding="utf-8")
+    monkeypatch.setattr(usage_agent, "SOURCE_ROOTS", {"T": str(tmp_path)})
+    fake = FakeLLM()
+    _use_llm(monkeypatch, fake)
+    r = column.run_column_impact("IF_ORDER_TMP", "TOTAL_AMT", "T")
+    assert len(r["hits"]) == 6 and not fake.prompts
+
+
+def test_no_column_hit_still_shows_table_statements(tmp_path: Path, monkeypatch: Any):
+    """컬럼이 한 줄도 없어도 '없다'로 끝내지 않는다. 컬럼 목록 없는 INSERT 는 영향 있음이다."""
+    (tmp_path / "a.sql").write_text(TABLE_ONLY_SQL, encoding="utf-8")
+    monkeypatch.setattr(usage_agent, "SOURCE_ROOTS", {"T": str(tmp_path)})
+
+    async def call(c: Client) -> Any:
+        res = await c.call_tool("analyze_column_impact",
+                                {"table": "IF_ORDER_TMP", "column": "TOTAL_AMT", "root": "T"})
+        grid = await c.read_resource("impact://column/IF_ORDER_TMP/TOTAL_AMT/T")
+        return res, grid
+
+    res, grid = _run(_with_client(call))
+    text = res.content[0].text
+    assert "컬럼 TOTAL_AMT 이 나온 줄은 없음, 컬럼 없이 테이블만 쓰는 문장 6개" in text
+    assert "영향 있음 1 / 확인 필요 1 / 영향 없음 4" in text
+    assert "a.sql:1 입력 — INSERT INTO IF_ORDER_TMP VALUES" in text
+    data = json.loads(grid.contents[0].text)
+    assert "컬럼이 나온 줄 0개 + 테이블만 쓰는 문장 6개" in data["subtitle"]
+    places = {row["place"] for row in data["grid"]["rows"]}
+    assert places == {"테이블만 씀(컬럼 없음)"}
 
 
 def test_mcp_tool_unknown_root_says_unknown():

@@ -128,13 +128,14 @@ async def check_interface_errors(
                 ci, n = imp["result"], imp["result"]["counts"]
                 lines.append(f"  원인: {imp['issue_text']} — 테이블은 {imp['table_from']}에서")
                 lines.append(
-                    f"  영향도: {imp['table']}.{imp['column']} 을 쓰는 줄 {ci['hit_count']}개 "
-                    f"({ci['root']}, 테이블을 쓰는 파일 {ci['table_files']}개) — "
+                    f"  영향도: {imp['table']}.{imp['column']} 이 나온 줄 {ci['hit_count']}개 + 컬럼 없이 "
+                    f"테이블만 쓰는 문장 {ci['table_only']}개 ({ci['root']}, 테이블을 쓰는 파일 "
+                    f"{ci['table_files']}개) — "
                     f"영향 있음 {n['yes']} / 확인 필요 {n['unknown']} / 영향 없음 {n['no']}"
                 )
                 lines += [f"    · {p}" for p in ci["places"][:5]]
                 if n["yes"] > 5:
-                    lines.append(f"    · 외 {n['yes'] - 5}줄")
+                    lines.append(f"    · 외 {n['yes'] - 5}곳")
         if n_imp:
             lines.append("전체 목록(프로그램·줄·판정 근거)은 답 아래 [표로 보기] 에서 볼 수 있다")
         else:
