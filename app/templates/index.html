@@ -15,6 +15,8 @@
     --err-bg:#fdeeee; --err-line:#f4c9c9; --err-ink:#9b2c2c;
     --code-bg:#f3f4f7; --shadow:0 1px 2px rgba(20,28,45,.06), 0 4px 16px rgba(20,28,45,.06);
     --radius:12px;
+    --glow-1:rgba(91,111,240,.13); --glow-2:rgba(168,85,247,.10); --glow-3:rgba(56,189,248,.11);
+    --sheen:rgba(91,111,240,.07);
     --font: "Pretendard", "Pretendard Variable", "Malgun Gothic", "Apple SD Gothic Neo",
             system-ui, -apple-system, "Segoe UI", sans-serif;
     --mono: "D2Coding", "Cascadia Code", Consolas, ui-monospace, monospace;
@@ -28,6 +30,8 @@
       --warn-bg:#2d2615; --warn-line:#5a4a22; --warn-ink:#e9cf8f;
       --err-bg:#2f1a1c; --err-line:#5c2a2e; --err-ink:#f0aeb0;
       --code-bg:#232835; --shadow:0 1px 2px rgba(0,0,0,.3), 0 4px 16px rgba(0,0,0,.25);
+      --glow-1:rgba(110,130,255,.16); --glow-2:rgba(180,100,255,.12); --glow-3:rgba(56,189,248,.10);
+      --sheen:rgba(150,165,255,.07);
     }
   }
 
@@ -68,7 +72,32 @@
   .empty-list { color:var(--faint); font-size:12.5px; padding:6px 10px; }
 
   /* ── 중앙 ─────────────────────────────────────────────────────── */
-  main { flex:1; display:flex; flex-direction:column; min-width:0; }
+  main { flex:1; display:flex; flex-direction:column; min-width:0; position:relative; isolation:isolate; }
+
+  /* 답을 기다리는 동안(main.thinking) 대화 영역 뒤에 은은한 빛이 돌며 색이 바뀐다.
+     애니메이션은 늘 돌리되 멈춰 두고 투명하게 숨긴다 — 끝날 때 색이 튀지 않고 서서히 사라지게. */
+  main::before { content:""; position:absolute; inset:56px 0 0; z-index:-1; pointer-events:none;
+                 background:
+                   radial-gradient(40% 50% at 18% 30%, var(--glow-1), transparent 70%),
+                   radial-gradient(45% 55% at 82% 65%, var(--glow-2), transparent 70%),
+                   radial-gradient(50% 45% at 50% 105%, var(--glow-3), transparent 70%);
+                 background-size:160% 160%;
+                 opacity:0; transition:opacity 1.2s ease;
+                 animation:aurora 14s ease-in-out infinite alternate; animation-play-state:paused; }
+  main.thinking::before { opacity:1; animation-play-state:running; }
+  @keyframes aurora {
+    0%   { background-position:0% 0%;     filter:hue-rotate(0deg); }
+    50%  { background-position:100% 40%;  filter:hue-rotate(40deg); }
+    100% { background-position:30% 100%;  filter:hue-rotate(-30deg); }
+  }
+  main.thinking form { animation:breathe 2.4s ease-in-out infinite; }
+  @keyframes breathe {
+    0%, 100% { border-color:var(--line);        box-shadow:var(--shadow); }
+    50%      { border-color:var(--accent-line); box-shadow:var(--shadow), 0 0 0 4px var(--accent-weak); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    main::before, main.thinking form, .work::after { animation:none; }
+  }
   .top { height:56px; display:flex; align-items:center; gap:10px; padding:0 22px;
          border-bottom:1px solid var(--line); background:var(--panel); flex-shrink:0; }
   #menu { display:none; border:0; background:transparent; cursor:pointer; padding:6px;
@@ -164,6 +193,12 @@
   .spin { width:15px; height:15px; border:2px solid var(--accent-line); border-top-color:var(--accent);
           border-radius:50%; animation:spin .8s linear infinite; }
   @keyframes spin { to { transform:rotate(360deg); } }
+  /* 처리 중 지나가는 빛 — 상자가 멈춰 있지 않다는 것을 보인다 */
+  .work { position:relative; overflow:hidden; }
+  .work::after { content:""; position:absolute; inset:0; pointer-events:none;
+                 background:linear-gradient(100deg, transparent 30%, var(--sheen) 50%, transparent 70%);
+                 transform:translateX(-100%); animation:sheen 2.6s ease-in-out infinite; }
+  @keyframes sheen { to { transform:translateX(100%); } }
   .work .prev { margin:6px 0 0 24px; padding:0; list-style:none; color:var(--muted); font-size:12.5px; }
   .work .prev li { position:relative; padding-left:14px; }
   .work .prev li::before { content:""; position:absolute; left:0; top:.62em; width:6px; height:6px;
@@ -639,6 +674,7 @@ $("f").addEventListener("submit", async (e) => {
   const text = q.value.trim();
   if (!text || busy) return;
   busy = true;
+  document.querySelector("main").classList.add("thinking");
   add(text, "user"); remember(text, "user");
   q.value = ""; fit(); syncSend();
 
@@ -722,6 +758,7 @@ $("f").addEventListener("submit", async (e) => {
     finish("err", String(err));
   } finally {
     busy = false; syncSend(); q.focus(); scrollDown();
+    document.querySelector("main").classList.remove("thinking");
   }
 });
 </script>
