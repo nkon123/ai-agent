@@ -482,10 +482,22 @@ def judge(table: str, column: str, hits: list[dict[str, Any]]) -> list[str]:
         if note and note not in warnings:
             warnings.append(note)
         verdict = verdict_of(v.kind, v.owner_table, table)
+        reason = v.reason.strip()[:200]
+        conflict = h["rule_verdict"] != "unknown" and h["rule_verdict"] != verdict
+        decided_by = "llm"
+        if conflict and h["rule_verdict"] == "yes":
+            # 규칙은 '그 테이블이 있는 문장'이라 영향 있음, LLM 은 아니라고 했다. LLM 이 규칙을
+            # 뒤집지 않는다 — 영향 없음으로 두면 그 줄이 답에서 사라져 영향을 놓친다(사용자 지적:
+            # 그리드 '규칙 추정' 은 영향 있음인데 판정·챗봇 답은 영향 없음). 사람이 볼 것으로 남긴다.
+            owner = v.owner_table.strip()
+            said = {"variable": "변수", "text": "글자"}.get(v.kind) or (
+                f"{owner} 의 컬럼" if owner else "판단 못 함")
+            verdict, decided_by = "unknown", "rule+llm"
+            reason = (f"규칙은 영향 있음(테이블과 같은 문장), LLM 은 {said} — 둘이 갈려 확인 필요. "
+                      f"LLM 근거: {reason}")[:300]
         h.update(verdict=verdict, usage=_usage(h, v.usage) if verdict == "yes" else "none",
-                 decided_by="llm", reason=v.reason.strip()[:200],
-                 llm_kind=v.kind, llm_owner=v.owner_table.strip(),
-                 conflict=h["rule_verdict"] != "unknown" and h["rule_verdict"] != verdict)
+                 decided_by=decided_by, reason=reason,
+                 llm_kind=v.kind, llm_owner=v.owner_table.strip(), conflict=conflict)
     if failures:
         warnings.append(f"LLM 판정 실패 {failures}문장 — 확인 필요")
     return warnings
@@ -555,7 +567,7 @@ def _analyze_uncached(table: str, column: str, root: str = "") -> dict[str, Any]
         rule = "hits-found"
     return {**out, "files_scanned": found["files_scanned"], "table_files": found["table_files"],
             "hits": hits, "warnings": warnings, "rule": rule,
-            "decided_by": "llm" if any(h["decided_by"] == "llm" for h in hits) else "rule"}
+            "decided_by": "llm" if any(h["decided_by"] in ("llm", "rule+llm") for h in hits) else "rule"}
 
 
 def counts_of(hits: list[dict[str, Any]]) -> dict[str, int]:
@@ -599,6 +611,12 @@ def run_column_impact(table: str, column: str, root: str = "",
                 {"where": where(h), "usage": USAGE_LABEL[h["usage"]], "code": h["code"][:80]}
                 for h in hits if h["verdict"] == "yes"
             ][:10],
+            "unknown_items": [
+                {"where": where(h), "code": h["code"][:80],
+                 "why": "규칙·LLM 갈림" if h["decided_by"] == "rule+llm" else
+                        "LLM 실패" if h["decided_by"] == "llm-failed" else ""}
+                for h in hits if h["verdict"] == "unknown"
+            ][:10],
             "unknown_places": [where(h) for h in hits if h["verdict"] == "unknown"][:5],
         }
     return {**base, "hits": hits}
@@ -626,7 +644,8 @@ def column_grid(table: str, column: str, root: str = "") -> dict[str, Any]:
                      if h["place"] != "comment" else "-"),
             "code": h["code"],
             "reason": h["reason"],
-            "decided_by": {"llm": "LLM", "rule": "규칙", "llm-failed": "LLM 실패"}[h["decided_by"]],
+            "decided_by": {"llm": "LLM", "rule": "규칙", "llm-failed": "LLM 실패",
+                           "rule+llm": "규칙·LLM 갈림"}[h["decided_by"]],
             "rule_verdict": VERDICT_LABEL[h["rule_verdict"]]
             + (" ≠ LLM" if h.get("conflict") else ""),
             "file": h["file"],

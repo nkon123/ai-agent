@@ -150,6 +150,13 @@ async def check_interface_errors(
                               for p in ci["place_items"][:5]]
                     if n["yes"] > 5:
                         lines.append(f"  - 외 {n['yes'] - 5}곳")
+                if ci["unknown_items"]:
+                    # '영향 없음'이 아니다. 규칙과 LLM 이 갈렸거나 판정하지 못한 줄 — 사람이 볼 곳.
+                    lines.append("- 확인 필요한 곳:")
+                    lines += [f"  - {_code(p['where'])}" + (f" ({p['why']})" if p["why"] else "")
+                              + f" — {_code(p['code'])}" for p in ci["unknown_items"][:5]]
+                    if n["unknown"] > 5:
+                        lines.append(f"  - 외 {n['unknown'] - 5}곳")
             lines.append(f"- 근거: 메일 {c['mail_count']}통, {c['rule']}{src}")
         if n_imp:
             lines += ["", "전체 목록(프로그램·줄·판정 근거)은 답 아래 [표로 보기] 에서 볼 수 있다"]

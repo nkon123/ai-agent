@@ -201,6 +201,36 @@ def test_rule_settled_lines_skip_llm(monkeypatch: Any):
     assert sent == [4, 14, 15, 20]
 
 
+def test_llm_does_not_overturn_rule_yes(tmp_path: Path, monkeypatch: Any):
+    """규칙은 영향 있음, LLM 은 다른 테이블 컬럼 → 영향 없음이 아니라 확인 필요.
+
+    그리드 '규칙 추정' 은 영향 있음인데 판정·챗봇 답은 영향 없음으로 나왔다(사용자 지적).
+    테이블이 둘인 문장에서 별칭 없이 쓴 컬럼이 이렇게 갈린다.
+    """
+    (tmp_path / "a.sql").write_text(
+        "SELECT TOTAL_AMT\n  FROM IF_ORDER_TMP A, ORD_HDR B\n WHERE A.K = B.K;\n", encoding="utf-8")
+    monkeypatch.setattr(usage_agent, "SOURCE_ROOTS", {"T": str(tmp_path)})
+    _use_llm(monkeypatch, FakeLLM({"SELECT TOTAL_AMT": ("column", "ORD_HDR")}))
+    r = column.run_column_impact("IF_ORDER_TMP", "TOTAL_AMT", "T")
+    h = r["hits"][0]
+    assert (h["rule_verdict"], h["verdict"], h["decided_by"]) == ("yes", "unknown", "rule+llm")
+    assert h["conflict"] and "둘이 갈려 확인 필요" in h["reason"] and "ORD_HDR 의 컬럼" in h["reason"]
+    assert r["counts"] == {"yes": 0, "unknown": 1, "no": 0}
+    row = column.column_grid("IF_ORDER_TMP", "TOTAL_AMT", "T")["grid"]["rows"][0]
+    assert (row["verdict"], row["decided_by"], row["rule_verdict"]) == ("확인 필요", "규칙·LLM 갈림", "영향 있음 ≠ LLM")
+    s = column.run_column_impact("IF_ORDER_TMP", "TOTAL_AMT", "T", detail="summary")
+    assert s["unknown_items"][0]["why"] == "규칙·LLM 갈림"
+
+
+def test_llm_agreeing_with_rule_yes_stays_yes(tmp_path: Path, monkeypatch: Any):
+    (tmp_path / "a.sql").write_text(
+        "SELECT TOTAL_AMT\n  FROM IF_ORDER_TMP A, ORD_HDR B\n WHERE A.K = B.K;\n", encoding="utf-8")
+    monkeypatch.setattr(usage_agent, "SOURCE_ROOTS", {"T": str(tmp_path)})
+    _use_llm(monkeypatch, FakeLLM({"SELECT TOTAL_AMT": ("column", "IF_ORDER_TMP")}))
+    h = column.run_column_impact("IF_ORDER_TMP", "TOTAL_AMT", "T")["hits"][0]
+    assert (h["verdict"], h["decided_by"], h["conflict"]) == ("yes", "llm", False)
+
+
 def test_llm_decides_what_rules_cannot(monkeypatch: Any):
     fake = FakeLLM({"SET TOTAL_AMT = TOTAL_AMT + 1": ("column", "ORD_HDR"),
                     "long TOTAL_AMT": ("variable", ""),
