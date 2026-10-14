@@ -119,9 +119,14 @@ def test_grid_reuses_the_last_investigation(monkeypatch: Any):
         AssertionError("다시 조사하면 안 된다")))
     g = incident.incident_grid("3일", "-")
     keys = [c["key"] for c in g["grid"]["columns"]]
-    assert keys[:3] == ["ifid", "cause", "verdict"]
+    assert keys[:4] == ["ifid", "cause", "mail_detail", "verdict"]
     assert g["grid"]["rows"] and all(row["ifid"] == "IF_ORD_RECV" for row in g["grid"]["rows"])
     assert "원인 컬럼 1개" in g["subtitle"]
+    # 무슨 문제였는지가 표 머리와 행 모두에 보인다.
+    assert g["subtitle"].startswith("원인: IF_ORD_RECV IF_ORDER_TMP.ORD_NO 길이 초과(실제 25 > 최대 20)")
+    row = g["grid"]["rows"][0]
+    assert row["cause"] == "IF_ORDER_TMP.ORD_NO 길이 초과(실제 25 > 최대 20)"
+    assert row["mail_detail"].startswith("ORA-12899: value too large")
 
 
 def _run(coro: Any) -> Any:
@@ -147,6 +152,7 @@ def test_check_interface_errors_tells_the_whole_story():
     assert "최근 3일(72시간) 메일 2통에서 인터페이스 오류 2건" in text
     assert "마스터: 파일" in text
     assert "원인: IF_ORDER_TMP.ORD_NO 길이 초과(실제 25 > 최대 20) — 테이블은 오류 메시지에서" in text
+    assert "메일 오류 내용: ORA-12899: value too large" in text
     assert "영향도: IF_ORDER_TMP.ORD_NO 이 나온 줄" in text and "테이블만 쓰는 문장" in text and "[표로 보기]" in text
     data = json.loads(grid.contents[0].text)
     assert data["title"] == "인터페이스 오류 영향도 — 최근 3일"

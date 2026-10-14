@@ -1223,6 +1223,65 @@ def test_llm_columns_must_be_in_the_mail():
     assert [(g["table"], g["column"]) for g in got] == [("", "ORD_NO")]   # 테이블은 메일에 없다
 
 
+HUMAN_MAIL = (
+    "안녕하세요.\n"
+    "주문번호(ORD_NO) 체계가 20자리 → 25자리로 바뀌어 적재가 실패했습니다.\n"
+    "고객코드 CUST_CD 가 비어 있는 건이 있습니다.\n"
+    "금액 TOTAL_AMT 형식이 맞지 않습니다.\n"
+)
+
+
+def test_llm_column_gets_the_problem_from_its_own_line():
+    """컬럼만 집고 '컬럼 오류' 로 끝나면 무슨 문제였는지 모른다. 그 줄의 말로 가른다."""
+    got = {g["column"]: g for g in iferr.verify_llm_columns(
+        HUMAN_MAIL, ["ORD_NO", "CUST_CD", "TOTAL_AMT"], "아무 요약")}
+    assert iferr.issue_text(got["ORD_NO"]) == "ORD_NO 길이 초과(실제 25 > 최대 20)"
+    # 다음 줄의 '비어 있는' 이 위 줄 컬럼에 붙지 않는다.
+    assert iferr.issue_text(got["CUST_CD"]) == "CUST_CD NULL 불가"
+    # 컬럼이 여럿이면 메일 하나짜리 LLM 요약을 어느 컬럼에도 붙이지 않는다.
+    assert iferr.issue_text(got["TOTAL_AMT"]) == "TOTAL_AMT 컬럼 오류"
+    assert got["TOTAL_AMT"]["detail"] == "금액 TOTAL_AMT 형식이 맞지 않습니다."
+
+
+def test_llm_problem_is_used_when_rules_cannot_tell():
+    i = iferr.verify_llm_columns(HUMAN_MAIL, ["TOTAL_AMT"], "금액 형식 오류")[0]
+    assert iferr.issue_text(i) == "TOTAL_AMT 금액 형식 오류"
+
+
+def test_llm_column_mixed_with_korean_name_is_kept():
+    """qwen 이 '주문번호 (ORD_NO)' 로 냈다(실측). 버리지 않고 이름 조각을 쓴다."""
+    i = iferr.verify_llm_columns(HUMAN_MAIL, ["주문번호 (ORD_NO)"], "길이 초과")[0]
+    assert i["column"] == "ORD_NO" and i["kind"] == "size"
+
+
+def test_table_written_before_the_column_is_not_an_interface_key():
+    """'IF_ORDER_TMP 의 TOTAL_AMT' — 컬럼만 낸 LLM 답에서도 테이블을 잡아 IFID 에서 뺀다(실측)."""
+    i = iferr.verify_llm_columns("IF_ORDER_TMP 의 TOTAL_AMT 에 소수점이 들어왔다", ["TOTAL_AMT"])[0]
+    assert i["table"] == "IF_ORDER_TMP"
+    mail = outlook.Mail(
+        subject="[연계오류] 주문 금액 수신 실패",
+        body="인터페이스 IF_AMT_RECV 처리 중 오류입니다.\n"
+             "IF_ORDER_TMP 의 TOTAL_AMT 에 소수점이 들어와 변환하지 못했습니다.\n",
+        sender="a@b.c", received=None, source="amt.eml")
+    import agents.iferr.agent as mod
+    verdict = {"is_error": True, "interface_ids": ["IF_AMT_RECV"], "cause_columns": ["TOTAL_AMT"],
+               "cause_problem": "소수점 포함 변환 불가", "reason": "r", "note": ""}
+    orig = (mod.llm_judge_enabled, mod.llm_judge_mail)
+    mod.llm_judge_enabled, mod.llm_judge_mail = (lambda: True), (lambda m: verdict)
+    try:
+        j = iferr.judge_mails([mail])[0][0]
+    finally:
+        mod.llm_judge_enabled, mod.llm_judge_mail = orig
+    assert [k["key"] for k in j["keys"]] == ["IF_AMT_RECV"]
+    assert iferr.issue_text(j["issues"][0]) == "IF_ORDER_TMP.TOTAL_AMT 소수점 포함 변환 불가"
+
+
+def test_oracle_issue_keeps_the_mail_line():
+    i = iferr.extract_issues('IF_ID : X\n오류내용 : ORA-12899: value too large for column '
+                             '"E"."T"."C" (actual: 25, maximum: 20)\n다음 줄')[0]
+    assert i["detail"].startswith("오류내용 : ORA-12899") and "다음 줄" not in i["detail"]
+
+
 def test_table_name_in_oracle_message_is_not_an_interface_key():
     """IF_ 로 시작하는 인터페이스 테이블이 if-prefix 규칙에 키로 잡혔다(실측)."""
     mail = outlook.Mail(

@@ -127,6 +127,8 @@ async def check_interface_errors(
                 n_imp += 1
                 ci, n = imp["result"], imp["result"]["counts"]
                 lines.append(f"  원인: {imp['issue_text']} — 테이블은 {imp['table_from']}에서")
+                if imp.get("mail_detail"):
+                    lines.append(f"  메일 오류 내용: {imp['mail_detail'][:160]}")
                 lines.append(
                     f"  영향도: {imp['table']}.{imp['column']} 이 나온 줄 {ci['hit_count']}개 + 컬럼 없이 "
                     f"테이블만 쓰는 문장 {ci['table_only']}개 ({ci['root']}, 테이블을 쓰는 파일 "

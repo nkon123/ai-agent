@@ -70,7 +70,8 @@ def targets_of(case: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
                             "영향도를 조사하지 못했다, 확인 필요")
             continue
         if issue.get("table"):
-            table, how = bare_table_name(issue["table"])[0].upper(), "오류 메시지"
+            table = bare_table_name(issue["table"])[0].upper()
+            how = "메일 본문" if issue.get("rule") == "llm" else "오류 메시지"
         elif len(tar_tables) == 1:
             table, how = tar_tables[0], "마스터 도착 테이블"
         else:
@@ -79,7 +80,9 @@ def targets_of(case: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
                             "영향도를 조사하지 못했다, 확인 필요")
             continue
         out.append({"table": table, "column": issue["column"].upper(), "table_from": how,
-                    "issue": issue, "issue_text": issue_text({**issue, "table": table})})
+                    "issue": issue, "issue_text": issue_text({**issue, "table": table}),
+                    # 메일에 적힌 오류 줄 원문. 요약(issue_text)이 맞는지 사람이 대 본다.
+                    "mail_detail": issue.get("detail") or issue.get("evidence") or ""})
     return out, warnings
 
 
@@ -171,17 +174,24 @@ def incident_grid(period: str = "", key: str = "", subject: str = "") -> dict[st
         for imp in c["impacts"]:
             # 컬럼 영향도 결과는 컬럼 쪽 캐시에 있다 — LLM 을 다시 돌리지 않는다.
             g = column_grid(imp["table"], imp["column"], "-")
-            rows += [{"ifid": c["key"], "cause": imp["issue_text"], **row}
+            rows += [{"ifid": c["key"], "cause": imp["issue_text"],
+                      "mail_detail": imp.get("mail_detail", ""), **row}
                      for row in g["grid"]["rows"]]
     impacts = [i for c in r["cases"] for i in c["impacts"]]
     counts = {k: sum(1 for row in rows if row["verdict"] == v) for k, v in VERDICT_LABEL.items()}
+    # 무슨 문제였는지를 표 머리에도 둔다 — 행마다 '원인' 칸을 읽지 않아도 보이게.
+    causes = list(dict.fromkeys(f"{c['key']} {i['issue_text']}" for c in r["cases"]
+                                for i in c["impacts"]))
     return {
         "title": "인터페이스 오류 영향도 — "
                  + (f"메일 '{r['picked_mail']['subject'][:40]}'" if r.get("picked_mail") else r["label"]),
-        "subtitle": (f"메일 {r['mail_count']}통 · 오류 {len(r['cases'])}건 · 원인 컬럼 {len(impacts)}개 · "
+        "subtitle": (("원인: " + " / ".join(causes) + " · " if causes else "")
+                     + f"메일 {r['mail_count']}통 · 오류 {len(r['cases'])}건 · 원인 컬럼 {len(impacts)}개 · "
                      f"행 {len(rows)}개 (영향 있음 {counts['yes']} / 확인 필요 "
                      f"{counts['unknown']} / 영향 없음 {counts['no']})"),
-        "grid": {"columns": [{"key": "ifid", "label": "IFID"}, {"key": "cause", "label": "원인"}]
+        "causes": causes,
+        "grid": {"columns": [{"key": "ifid", "label": "IFID"}, {"key": "cause", "label": "원인"},
+                             {"key": "mail_detail", "label": "메일 오류 내용"}]
                  + [{"key": k, "label": v} for k, v in GRID_COLUMNS],
                  "rows": rows, "filter_key": "verdict",
                  "tones": {VERDICT_LABEL["yes"]: "bad", VERDICT_LABEL["unknown"]: "warn",

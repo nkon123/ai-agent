@@ -144,6 +144,43 @@ _ISSUE_NO_COLUMN = [
 ISSUE_LABEL = {"size": "길이 초과", "null": "NULL 불가", "precision": "숫자 자릿수 초과",
                "other": "컬럼 오류"}
 
+# 사람이 쓴 메일에서 문제 종류를 가르는 말. 컬럼이 나온 그 줄에서만 찾는다 — 앞뒤 줄까지
+# 보면 다음 줄의 '비어 있는 건' 이 위 줄 컬럼의 문제로 붙었다(시험 중 확인).
+# 순서가 중요하다 — '자릿수' 는 '자리' 를 품고 있어 숫자 자릿수를 먼저 본다.
+_KIND_WORDS: list[tuple[str, re.Pattern[str]]] = [
+    ("null", re.compile(r"NULL|널\b|필수|누락|비어\s*있|빈\s*값|empty|mandatory", re.IGNORECASE)),
+    ("precision", re.compile(r"자릿수|precision|정밀도|숫자.{0,6}(?:초과|넘)", re.IGNORECASE)),
+    ("size", re.compile(r"길이|자리|사이즈|size|too\s+(?:large|long)|크기|byte|바이트|length|초과",
+                        re.IGNORECASE)),
+]
+# "20자리 → 25자리", "20자리에서 25자리로" — 앞이 원래(최대), 뒤가 들어온 값(실제)이다.
+_SIZE_CHANGE = re.compile(r"(\d+)\s*(?:자리|자|byte|바이트)\s*(?:→|->|=>|에서)\s*(\d+)\s*(?:자리|자|byte|바이트)",
+                          re.IGNORECASE)
+
+
+def _line_around(text: str, start: int) -> str:
+    """start 가 든 줄(공백만 정리, 200자까지)."""
+    pos = 0
+    for line in text.splitlines():
+        if pos + len(line) >= start:
+            return " ".join(line.split())[:200]
+        pos += len(line) + 1
+    return ""
+
+
+def problem_of(line: str) -> tuple[str, str, str]:
+    """사람이 쓴 오류 문장에서 (문제 종류, 실제, 최대). 못 가르면 ('other', '', '')."""
+    for kind, pat in _KIND_WORDS:
+        if pat.search(line):
+            if kind != "size":
+                return kind, "", ""
+            m = _SIZES.search(line)
+            if m:
+                return kind, m.group(1), m.group(2)
+            m = _SIZE_CHANGE.search(line)
+            return (kind, m.group(2), m.group(1)) if m else (kind, "", "")
+    return "other", "", ""
+
 
 def extract_issues(text: str) -> list[dict[str, str]]:
     """오류 내용에서 원인 컬럼을 뽑는다. [{kind, rule, schema, table, column, actual, max, evidence}]
@@ -173,26 +210,39 @@ def extract_issues(text: str) -> list[dict[str, str]]:
                 "column": column, "actual": sizes.group(1) if sizes else "",
                 "max": sizes.group(2) if sizes else "",
                 "evidence": " ".join(text[start:end].split()),
+                # 메일에 적힌 오류 줄 그대로 — 화면에 '무슨 문제였는지' 원문으로 보인다.
+                "detail": _line_around(text, m.start()),
             })
     for rule, kind, pat in _ISSUE_NO_COLUMN:
         m = pat.search(text)
         if m and not any(f["kind"] == kind for f in found):
             start, end = max(0, m.start() - 10), min(len(text), m.end() + 60)
             found.append({"kind": kind, "rule": rule, "schema": "", "table": "", "column": "",
-                          "actual": "", "max": "", "evidence": " ".join(text[start:end].split())})
+                          "actual": "", "max": "", "evidence": " ".join(text[start:end].split()),
+                          "detail": _line_around(text, m.start())})
     return found
 
 
-def verify_llm_columns(text: str, columns: list[str]) -> list[dict[str, str]]:
+def verify_llm_columns(text: str, columns: list[str], problem: str = "") -> list[dict[str, str]]:
     """LLM 이 낸 원인 컬럼 중 메일에 실제로 적힌 것만 issue 로 만든다.
 
     'ERP.ORD_HDR.CUST_NM' 처럼 점으로 이어 내면 마지막 조각이 컬럼, 그 앞이 테이블이다.
     지어낸 컬럼으로 영향도를 조사하면 엉뚱한 프로그램이 '영향 있음'으로 나온다.
+
+    무슨 문제였는지는 컬럼이 나온 줄의 말로 규칙이 먼저 가른다(길이·자리 → 길이 초과,
+    NULL·필수·비어 있음 → NULL 불가). 못 가르면 LLM 이 요약한 problem 을 쓴다 — 단 컬럼이
+    하나일 때만(요약은 메일 전체에 하나라 컬럼이 여럿이면 어느 것의 문제인지 모른다).
+    어느 쪽이든 메일 원문 줄(detail)을 함께 남겨 사람이 확인할 수 있게 한다.
     """
     out: list[dict[str, str]] = []
     seen: set[str] = set()
+    problem = (problem or "").strip()[:40] if len(columns) == 1 else ""
+    cands: list[str] = []
     for raw in columns:
         cand = str(raw).strip().strip("[](){}<>\"'`.,:;")
+        # '주문번호 (ORD_NO)' 처럼 한글 이름과 섞어 낸다(실측). 이름 모양 조각만 꺼낸다.
+        cands += [cand] if _ID_SHAPE.fullmatch(cand) else _ID_TOKEN.findall(cand)
+    for cand in cands:
         parts = [p.strip('"') for p in cand.split(".") if p.strip('"')]
         if not parts:
             continue
@@ -206,9 +256,18 @@ def verify_llm_columns(text: str, columns: list[str]) -> list[dict[str, str]]:
             table = ""                     # 테이블은 메일에 없다 — 버리고 마스터로 채운다
         seen.add(column.upper())
         start, end = max(0, m.start() - 30), min(len(text), m.end() + 30)
-        out.append({"kind": "other", "rule": "llm", "schema": "", "table": table,
-                    "column": m.group(0), "actual": "", "max": "",
-                    "evidence": " ".join(text[start:end].split())})
+        detail = _line_around(text, m.start())
+        if not table:
+            # 'IF_ORDER_TMP 의 TOTAL_AMT', 'IF_ORDER_TMP.TOTAL_AMT' — 같은 줄에서 컬럼 바로 앞에
+            # 적힌 테이블. 안 잡으면 IF_ 로 시작하는 테이블 이름이 IFID 로 뽑혔다(실측).
+            t = re.search(rf"([A-Za-z_][\w$#]*)\s*(?:\.|(?:테이블)?\s*의)\s*{re.escape(m.group(0))}\b",
+                          detail)
+            table = t.group(1) if t else ""
+        kind, actual, maximum = problem_of(detail)
+        out.append({"kind": kind, "rule": "llm", "schema": "", "table": table,
+                    "column": m.group(0), "actual": actual, "max": maximum,
+                    "evidence": " ".join(text[start:end].split()), "detail": detail,
+                    "problem": problem if kind == "other" else ""})
     return out
 
 
@@ -216,7 +275,10 @@ def issue_text(i: dict[str, str]) -> str:
     """'IF_ORDER_TMP.ORD_NO 길이 초과(실제 25 > 최대 20)'."""
     where = ".".join(x for x in (i.get("table"), i.get("column")) if x) or "컬럼 미상"
     size = f"(실제 {i['actual']} > 최대 {i['max']})" if i.get("actual") and i.get("max") else ""
-    return f"{where} {ISSUE_LABEL.get(i.get('kind', ''), '컬럼 오류')}{size}"
+    kind = i.get("kind", "")
+    # 종류를 못 가른 사람 글은 LLM 이 요약한 문제를 쓴다. '컬럼 오류' 만으로는 무슨 일인지 모른다.
+    label = (i.get("problem") or "").strip() if kind == "other" else ""
+    return f"{where} {label or ISSUE_LABEL.get(kind, '컬럼 오류')}{size}"
 
 
 def normalize_subject(subject: str) -> str:
@@ -427,6 +489,8 @@ _REPLY_COPY = re.compile(r"^\s*(RE|FW|FWD|회신|전달|답장)\s*:", re.IGNOREC
 
 # ID 로 받아 줄 모양. 공백·한글이 섞이면 문장 조각이지 ID 가 아니다.
 _ID_SHAPE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_\-.]{1,59}")
+# 한글과 섞인 답에서 이름 모양 조각만. '주문번호 (ORD_NO)' → ORD_NO
+_ID_TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_$#]*(?:\.[A-Za-z_][A-Za-z0-9_$#]*){0,2}")
 
 
 def llm_judge_enabled() -> bool:
@@ -457,7 +521,9 @@ def _llm_prompt(mail: Mail) -> str:
         "ID 가 없으면 빈 목록. 메일에 없는 ID 를 만들지 마라.\n"
         "3) cause_columns: 오류 원인으로 적힌 DB 컬럼 이름(예: 길이 초과·NULL 불가가 난 컬럼)을 "
         "적힌 글자 그대로. 테이블이 함께 적혀 있으면 '테이블.컬럼'. 없으면 빈 목록.\n"
-        "4) reason: 판단 근거를 한 문장으로.\n\n"
+        "4) cause_problem: 그 컬럼에 무슨 문제가 났는지 메일 내용대로 짧게(예: '길이 초과', "
+        "'NULL 입력', '형식 오류'). 컬럼이 없으면 빈 값.\n"
+        "5) reason: 판단 근거를 한 문장으로.\n\n"
         f"제목: {mail.subject}\n"
         f"본문:\n{body}"
     )
@@ -478,6 +544,7 @@ def llm_judge_mail(mail: Mail) -> dict[str, Any]:
         is_error: bool = Field(description="인터페이스 처리 실패·오류를 알리는 메일인가")
         interface_ids: list[str] = Field(description="메일에 적힌 인터페이스 ID, 적힌 그대로")
         cause_columns: list[str] = Field(description="오류 원인으로 적힌 DB 컬럼, 적힌 그대로")
+        cause_problem: str = Field(default="", description="그 컬럼에 난 문제를 짧게")
         reason: str = Field(description="판단 근거 한 문장")
 
     v, note = invoke_structured(MailVerdict, _llm_prompt(mail))
@@ -485,6 +552,7 @@ def llm_judge_mail(mail: Mail) -> dict[str, Any]:
         "is_error": bool(v.is_error),
         "interface_ids": [str(x) for x in (v.interface_ids or [])][:20],
         "cause_columns": [str(x) for x in (v.cause_columns or [])][:10],
+        "cause_problem": str(v.cause_problem or "").strip()[:40],
         "reason": str(v.reason or "").strip()[:200],
         "note": note,
     }
@@ -584,7 +652,8 @@ def judge_mails(
             # 원인 컬럼: Oracle 메시지 규칙이 먼저, 컬럼을 못 뽑았을 때만 LLM 답을 쓴다.
             issues = extract_issues(text)
             if verdict and not any(i["column"] for i in issues):
-                issues += verify_llm_columns(text, verdict.get("cause_columns") or [])
+                issues += verify_llm_columns(text, verdict.get("cause_columns") or [],
+                                             verdict.get("cause_problem") or "")
             # 오류 메시지가 테이블·컬럼이라고 밝힌 이름은 인터페이스 키가 아니다.
             # 인터페이스 테이블은 IF_ 로 시작하는 일이 흔해 if-prefix 규칙이
             # "ERP"."IF_ORDER_TMP" 를 키로 뽑았다(실측) — 없는 IFID 로 조회하게 된다.
