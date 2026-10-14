@@ -38,7 +38,7 @@ from agents.iferr import (
     run_iferr,
     table_interfaces,
 )
-from agents.iferr.agent import flow_text, parse_period, system_table
+from agents.iferr.agent import flow_text, issue_text, parse_period, system_table
 from core.sqlstmt import bare_table_name
 
 from agents.incident import incident_grid, run_incident
@@ -84,6 +84,9 @@ _SAMPLE_KEY = sample_key(IFERR_KEY_PREFIXES)
     ),
     read_only=True,
     tier="combo",
+    # 결과가 완성된 보고서다. 모델이 다시 쓰면 원인 없는 재고 오류를 '오류 아님'으로,
+    # '17줄이 영향' 처럼 숫자를 섞어 썼다(qwen3.5:4b 실측). 그대로 보인다.
+    answer="tool",
 )
 async def check_interface_errors(
     period: str = "", key: str = "", subject: str = "", ctx: Context = None
@@ -114,32 +117,42 @@ async def check_interface_errors(
     elif not r["cases"]:
         head = f"{where}에서 인터페이스 오류 키를 찾지 못했다"
     else:
+        # 화면이 그대로 그릴 수 있는 마크다운으로 쓴다 — 케이스마다 굵은 머리 줄, 그 아래 하위
+        # 목록. 들여쓴 '원인:'·'· 위치' 줄로 쓰면 화면이 첫 항목 하나에 이어 붙여 영향도가 있을
+        # 때만 모양이 무너졌다(사용자 지적). 모델도 이 모양을 보고 답을 쓴다.
         lines = [f"{where}에서 인터페이스 오류 {len(r['cases'])}건"]
         n_imp = 0
         for c in r["cases"]:
             mark = {"found": "확인됨", "missing": "데이터 없음"}.get(c["status"], "확인 불가")
             src = " / 마스터: 파일" if c["master_source"] == "file" else ""
-            lines.append(
-                f"- {c['key']}: {mark} — {c['impact']} "
-                f"(메일 {c['mail_count']}통, 근거 {c['rule']}{src})"
-            )
+            lines += ["", f"**{c['key']}** · {mark} — {c['impact']}"]
+            if not c["issues"]:
+                # 빈 칸으로 두면 '원인 없음'으로 읽힌다. 메일에 컬럼 오류가 안 적혔을 뿐이다.
+                lines.append("- 원인 컬럼: 메일에 적힌 컬럼 오류가 없다 — 컬럼 영향도는 조사하지 않았다")
+            elif not c["impacts"]:
+                lines += [f"- 원인: **{issue_text(i)}** — 영향도를 조사하지 못했다(아래 확인 필요)"
+                          for i in c["issues"]]
             for imp in c["impacts"]:
                 n_imp += 1
                 ci, n = imp["result"], imp["result"]["counts"]
-                lines.append(f"  원인: {imp['issue_text']} — 테이블은 {imp['table_from']}에서")
+                lines.append(f"- 원인: **{imp['issue_text']}** — 테이블은 {imp['table_from']}에서")
                 if imp.get("mail_detail"):
-                    lines.append(f"  메일 오류 내용: {imp['mail_detail'][:160]}")
+                    lines.append(f"- 메일 오류 내용: {_code(imp['mail_detail'][:160])}")
                 lines.append(
-                    f"  영향도: {imp['table']}.{imp['column']} 이 나온 줄 {ci['hit_count']}개 + 컬럼 없이 "
+                    f"- 영향도: 영향 있음 **{n['yes']}** / 확인 필요 {n['unknown']} / 영향 없음 {n['no']} "
+                    f"— {imp['table']}.{imp['column']} 이 나온 줄 {ci['hit_count']}개 + 컬럼 없이 "
                     f"테이블만 쓰는 문장 {ci['table_only']}개 ({ci['root']}, 테이블을 쓰는 파일 "
-                    f"{ci['table_files']}개) — "
-                    f"영향 있음 {n['yes']} / 확인 필요 {n['unknown']} / 영향 없음 {n['no']}"
+                    f"{ci['table_files']}개)"
                 )
-                lines += [f"    · {p}" for p in ci["places"][:5]]
-                if n["yes"] > 5:
-                    lines.append(f"    · 외 {n['yes'] - 5}곳")
+                if ci["place_items"]:
+                    lines.append("- 영향 있는 곳:")
+                    lines += [f"  - {_code(p['where'])} {p['usage']} — {_code(p['code'])}"
+                              for p in ci["place_items"][:5]]
+                    if n["yes"] > 5:
+                        lines.append(f"  - 외 {n['yes'] - 5}곳")
+            lines.append(f"- 근거: 메일 {c['mail_count']}통, {c['rule']}{src}")
         if n_imp:
-            lines.append("전체 목록(프로그램·줄·판정 근거)은 답 아래 [표로 보기] 에서 볼 수 있다")
+            lines += ["", "전체 목록(프로그램·줄·판정 근거)은 답 아래 [표로 보기] 에서 볼 수 있다"]
         else:
             # 원인 컬럼이 없으면 예전처럼 다음 질문을 짚어 준다. 소형 모델은 툴을 이어 부르지
             # 못하고, 'EMP.TB_ORDER' 를 그대로 보여 주면 그 문자열로 영향도를 물어 엉뚱한 것을 찾는다.
@@ -149,18 +162,26 @@ async def check_interface_errors(
             ]
             if targets:
                 uniq = sorted(set(targets))[:3]
-                lines.append(
+                lines += [
+                    "",
                     "영향 조사: " + ", ".join(uniq) + " 이(가) 안 채워졌다. 이 테이블을 쓰는 "
-                    "프로그램은 analyze_table_impact 로 확인할 수 있다"
-                )
+                    "프로그램은 analyze_table_impact 로 확인할 수 있다",
+                ]
         head = "\n".join(lines)
 
     if r.get("comment"):
-        head += f"\n요약: {r['comment']}"
+        head += f"\n\n요약: {r['comment']}"
     if r["warnings"]:
         # 확인 필요를 삼키지 않는다. 장애를 놓치는 것보다 시끄러운 편이 낫다.
-        head += "\n확인 필요: " + "; ".join(r["warnings"])
+        # 한 줄에 ';' 로 이으면 길어서 읽히지 않는다 — 목록으로.
+        head += "\n\n확인 필요:\n" + "\n".join(f"- {w}" for w in r["warnings"])
     return head
+
+
+def _code(s: str) -> str:
+    """화면 마크다운의 코드 표시. 안의 백틱은 따옴표로 바꾼다(코드 표시가 끊긴다)."""
+    s = " ".join(str(s).split()).replace("`", "'")
+    return f"`{s}`" if s else ""
 
 
 @mcp.resource(

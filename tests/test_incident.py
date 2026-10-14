@@ -151,9 +151,18 @@ def test_check_interface_errors_tells_the_whole_story():
     text = res.content[0].text
     assert "최근 3일(72시간) 메일 2통에서 인터페이스 오류 2건" in text
     assert "마스터: 파일" in text
-    assert "원인: IF_ORDER_TMP.ORD_NO 길이 초과(실제 25 > 최대 20) — 테이블은 오류 메시지에서" in text
-    assert "메일 오류 내용: ORA-12899: value too large" in text
-    assert "영향도: IF_ORDER_TMP.ORD_NO 이 나온 줄" in text and "테이블만 쓰는 문장" in text and "[표로 보기]" in text
+    assert "- 원인: **IF_ORDER_TMP.ORD_NO 길이 초과(실제 25 > 최대 20)** — 테이블은 오류 메시지에서" in text
+    assert "- 메일 오류 내용: `ORA-12899: value too large" in text
+    assert "- 영향도: 영향 있음 **" in text and "IF_ORDER_TMP.ORD_NO 이 나온 줄" in text
+    assert "테이블만 쓰는 문장" in text and "[표로 보기]" in text
+    # 화면 마크다운이 그대로 그릴 수 있는 모양: 케이스마다 굵은 머리 줄, 영향 있는 곳은 하위 목록.
+    # 들여쓴 '원인:'·'· 위치' 줄은 화면이 첫 항목에 이어 붙여 무너졌다.
+    lines = text.splitlines()
+    assert "**IF_ORD_RECV** · 확인됨" in text and "**IF_STK_RECV** · 확인됨" in text
+    # 원인 컬럼이 없는 케이스(timeout)는 빈 칸이 아니라 그 사실을 적는다.
+    assert "- 원인 컬럼: 메일에 적힌 컬럼 오류가 없다" in text
+    assert any(l.startswith("  - `[ERP] ord_join.sql:5` 조회 — `SELECT") for l in lines)
+    assert not any(l.startswith("  원인") or l.lstrip().startswith("·") for l in lines)
     data = json.loads(grid.contents[0].text)
     assert data["title"] == "인터페이스 오류 영향도 — 최근 3일"
     assert data["grid"]["rows"]
@@ -226,7 +235,7 @@ def test_check_interface_errors_by_subject():
     text = res.content[0].text
     assert text.startswith("메일 '[연계오류] 주문 수신 인터페이스 처리 실패' (2026-10-14 08:00)에서 "
                            "인터페이스 오류 1건")
-    assert "원인: IF_ORDER_TMP.ORD_NO" in text
+    assert "원인: **IF_ORDER_TMP.ORD_NO" in text
     data = json.loads(grid.contents[0].text)
     assert data["title"].startswith("인터페이스 오류 영향도 — 메일 '[연계오류] 주문 수신")
     assert data["grid"]["rows"]
@@ -246,3 +255,27 @@ def test_empty_model_reply_falls_back_to_tool_result():
     reply = _reply_of(old + turn)
     assert "오늘(5시간) 메일 2통" in reply and "이전 답" not in reply
     assert _reply_of(old + [M(type="human", content="q"), M(type="ai", content="답")]) == "답"
+
+
+def test_direct_answer_tool_result_is_the_reply():
+    """answer="tool" 툴은 결과가 곧 답이다 — 앞 단계 툴 결과·이전 답을 섞지 않고, 안내 문구도 안 붙인다."""
+    from types import SimpleNamespace as M
+
+    from app.app import _reply_of
+
+    turn = [M(type="human", content="오늘 오류"), M(type="ai", content=""),
+            M(type="tool", content="앞 단계 결과"), M(type="ai", content=""),
+            M(type="tool", content="오늘(5시간) 메일 2통 …")]
+    assert _reply_of([M(type="ai", content="이전 답")] + turn) == "오늘(5시간) 메일 2통 …"
+
+
+def test_check_interface_errors_answers_directly():
+    """모델이 다시 쓰면 숫자를 섞고 항목을 뺐다(실측). 툴 결과를 그대로 답으로 쓴다."""
+    from app.mcp_bridge import _spec_of
+
+    async def call(c: Client) -> Any:
+        return {t.name: t for t in (await c.list_tools()).tools}
+
+    tools = _run(_with_client(call))
+    assert _spec_of(tools["check_interface_errors"])["answer"] == "tool"
+    assert _spec_of(tools["analyze_column_impact"])["answer"] == "model"

@@ -594,6 +594,11 @@ def run_column_impact(table: str, column: str, root: str = "",
                 f"{where(h)} {USAGE_LABEL[h['usage']]} — {h['code'][:80]}"
                 for h in hits if h["verdict"] == "yes"
             ][:10],
+            # 같은 내용을 조각으로. 화면에 위치·코드를 따로 그릴 때 쓴다(문자열을 다시 자르지 않게).
+            "place_items": [
+                {"where": where(h), "usage": USAGE_LABEL[h["usage"]], "code": h["code"][:80]}
+                for h in hits if h["verdict"] == "yes"
+            ][:10],
             "unknown_places": [where(h) for h in hits if h["verdict"] == "unknown"][:5],
         }
     return {**base, "hits": hits}

@@ -87,6 +87,7 @@ def register(
     destructive: bool = False,
     idempotent: bool = True,
     tier: str = "combo",
+    answer: str = "model",
     name: str | None = None,
 ) -> Callable[[F], F]:
     """MCP 툴로 등록하는 데코레이터.
@@ -109,12 +110,19 @@ def register(
     tier        : "combo" 는 한 번 호출로 끝나는 통합 툴(챗봇에 노출),
                   "step" 은 단계별 툴(챗봇에는 숨기고 다른 MCP 호스트용).
                   소형 모델에 툴을 여럿 보여 주면 순서대로 부르지 못한다.
+    answer      : "model" 은 툴 결과를 보고 모델이 답을 쓴다(기본).
+                  "tool" 은 툴 결과를 그대로 답으로 보인다 — 모델을 다시 부르지 않는다.
+                  결과가 이미 완성된 보고서인 툴에 쓴다. 소형 모델이 다시 쓰면 숫자를
+                  섞고(17줄이 영향) 항목을 빼고(원인 없는 오류를 '오류 아님'으로) 모양도
+                  매번 달라졌다(실측). 툴 결과는 화면 마크다운으로 쓸 것.
     """
 
     def deco(fn: F) -> F:
         tool_name = name or fn.__name__
         if tier not in ("combo", "step"):
             raise ValueError(f"tier 는 combo | step 이어야 한다: {tier}")
+        if answer not in ("model", "tool"):
+            raise ValueError(f"answer 는 model | tool 이어야 한다: {answer}")
         if any(e["name"] == tool_name for e in _REGISTRY):
             # 같은 이름이 두 번 등록되면 LLM 이 어느 쪽을 부를지 알 수 없다.
             # 조용히 덮어쓰지 않고 즉시 실패시킨다.
@@ -130,6 +138,7 @@ def register(
                 "examples": tuple(examples),
                 "destructive": destructive,
                 "tier": tier,
+                "answer": answer,
             }
         )
 
@@ -151,6 +160,7 @@ def register(
                 "hint": hint.strip(),
                 "examples": list(examples),
                 "tier": tier,
+                "answer": answer,
             },
         )(fn)
 

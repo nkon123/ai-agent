@@ -49,6 +49,25 @@ python agents/incident/agent.py --subject "[연계오류] 주문 수신"   # 제
 오류 메시지가 테이블·컬럼이라고 밝힌 이름은 인터페이스 키에서 뺀다. `IF_` 로 시작하는
 인터페이스 테이블(`IF_ORDER_TMP`)이 `if-prefix` 규칙에 키로 잡혀 없는 IFID 를 조회했다(실측).
 
+## 답 모양
+
+`check_interface_errors` 는 `answer="tool"` — 툴 결과가 그대로 답이다(모델이 다시 쓰지 않는다,
+README '툴 결과를 그대로 답으로'). 케이스마다 굵은 머리 줄과 하위 목록이다:
+
+```
+**IF_ORD_RECV** · 확인됨 — [SAP] ZORDER_OUT → [ERP] IF_ORDER_TMP (매일 08:30, 12:00)
+- 원인: **IF_ORDER_TMP.ORD_NO 길이 초과(실제 25 > 최대 20)** — 테이블은 오류 메시지에서
+- 메일 오류 내용: `오류내용 : ORA-12899: value too large for column ...`
+- 영향도: 영향 있음 **11** / 확인 필요 2 / 영향 없음 7 — ... 이 나온 줄 17개 + 테이블만 쓰는 문장 3개 (...)
+- 영향 있는 곳:
+  - `[ERP] ord_join.sql:5` 조회 — `SELECT T.ORD_NO, T.TOTAL_AMT`
+  - 외 6곳
+- 근거: 메일 1통, rows-found / 마스터: 파일
+
+**IF_STK_RECV** · 확인됨 — [WMS] STOCK_OUT → [ERP] IF_STOCK_TMP (매일 06:00)
+- 원인 컬럼: 메일에 적힌 컬럼 오류가 없다 — 컬럼 영향도는 조사하지 않았다
+```
+
 ## 상한과 시간
 
 - `INCIDENT_MAX_IMPACTS`(기본 2): 한 번에 이어서 조사하는 원인 컬럼 수. 넘으면 확인 필요로 알린다.

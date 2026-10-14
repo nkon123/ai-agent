@@ -101,6 +101,14 @@ def _reply_of(messages: list[Any]) -> str:
     last_human = max((i for i, m in enumerate(messages) if getattr(m, "type", "") == "human"),
                      default=-1)
     turn = messages[last_human + 1:]
+    if turn and getattr(turn[-1], "type", "") == "tool":
+        # 툴에서 턴이 끝났다 = answer="tool" 툴(return_direct). 그 결과가 곧 답이다.
+        # 마지막 모델 메시지가 부른 툴들의 결과만 — 앞 단계 툴 결과는 섞지 않는다.
+        last_ai = max((i for i, m in enumerate(turn) if getattr(m, "type", "") == "ai"), default=-1)
+        direct = [m.content for m in turn[last_ai + 1:]
+                  if getattr(m, "type", "") == "tool" and isinstance(m.content, str) and m.content.strip()]
+        if direct:
+            return "\n\n".join(direct)
     for m in reversed(turn):
         if getattr(m, "type", "") == "ai" and isinstance(m.content, str) and m.content.strip():
             return m.content

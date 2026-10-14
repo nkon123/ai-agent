@@ -293,6 +293,8 @@ class MCPBridge:
             args_schema=mcp_tool.input_schema,
             coroutine=_call,
             metadata=_spec_of(mcp_tool),
+            # answer="tool" 툴은 결과가 곧 답이다. 에이전트가 모델을 다시 부르지 않고 끝낸다.
+            return_direct=_spec_of(mcp_tool)["answer"] == "tool",
         )
 
 
@@ -329,6 +331,7 @@ def _spec_of(mcp_tool: Any) -> dict[str, Any]:
         "hint": meta.get("hint", ""),
         "examples": list(meta.get("examples") or []),
         "tier": meta.get("tier", "combo"),
+        "answer": meta.get("answer", "model"),
         "in_chat": meta.get("tier", "combo") in set(config.CHAT_TOOL_TIERS),
         "read_only": bool(getattr(ann, "read_only_hint", False)) if ann else False,
         "destructive": bool(getattr(ann, "destructive_hint", False)) if ann else False,

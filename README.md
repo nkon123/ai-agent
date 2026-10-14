@@ -349,6 +349,7 @@ from . import mcp, register
           examples=("이렇게 물어보세요", "예시 질문 두어 개"),  # 화면 사이드바
           read_only=True,          # 파괴적이면 destructive=True
           tier="combo")            # 단계별 툴이면 tier="step"
+                                   # 결과가 곧 답이면 answer="tool" (아래 '툴 결과를 그대로 답으로')
 def myagent_run(arg: str) -> str:
     """LLM 이 읽는 설명. 언제 이 툴을 쓰는지 여기에 쓴다."""
     return str(run_myagent(arg, detail="summary"))   # summary!
@@ -437,6 +438,18 @@ CHAT_TOOL_TIERS=combo,step python app/app.py   # 큰 모델로 바꾸면 전부 
 통합 툴과 단계별 툴은 **같은 에이전트 함수를 재사용한다.** 그래야 어느
 쪽으로 불러도 결과가 같다(테스트로 고정되어 있다). 툴 파일에는 로직을
 넣지 않는다.
+
+### 툴 결과를 그대로 답으로 — `answer="tool"`
+
+기본(`answer="model"`)은 툴 결과를 보고 모델이 답을 다시 쓴다. 결과가 이미 완성된 보고서인
+툴은 `answer="tool"` 로 둔다 — 에이전트가 모델을 다시 부르지 않고(`return_direct`) 툴 결과를
+그대로 답으로 보인다. `check_interface_errors` 가 그렇다. 소형 모델이 다시 쓰면 원인 컬럼이 없는
+재고 오류를 '오류 확인되지 않음'으로, 줄 수와 영향 건수를 섞어 '17줄이 영향'으로 썼고, 영향
+있는 곳을 빼거나 모양이 매번 달랐다(qwen3.5:4b 실측). 다시 쓰지 않으니 1~2초 빠르다.
+
+이런 툴의 결과는 **화면 마크다운으로** 쓴다: 굵은 머리 줄 + `- ` 목록 + 두 칸 들여쓴 `  - ` 하위
+목록, 코드는 백틱. 공백만으로 들여쓴 줄(`  원인:`, `    · 위치`)은 화면이 앞 목록 항목에 이어
+붙여 영향도가 있을 때만 모양이 무너졌다(사용자 지적).
 
 ### MCP 메타데이터는 `_meta` 와 annotations 로
 
