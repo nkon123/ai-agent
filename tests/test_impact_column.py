@@ -349,6 +349,11 @@ def test_mcp_tool_summary_and_grid_resource():
     assert "[표로 보기]" in text
     data = json.loads(grid.contents[0].text)
     assert data["title"] == "IF_ORDER_TMP.TOTAL_AMT 컬럼 영향도"
+    # 행마다 파일·줄이 있다고 알려 화면이 더블클릭으로 소스를 띄운다.
+    assert data["grid"]["source"] == {"root_key": "root", "path_key": "src_path", "line_key": "line",
+                                      "word": "TOTAL_AMT"}
+    # 절대 경로가 아니라 루트 기준 상대 경로를 준다.
+    assert all(row["src_path"] and not Path(row["src_path"]).is_absolute() for row in data["grid"]["rows"])
     assert len(data["grid"]["rows"]) == 12
 
 

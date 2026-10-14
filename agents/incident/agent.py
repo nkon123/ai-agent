@@ -175,7 +175,7 @@ def incident_grid(period: str = "", key: str = "", subject: str = "") -> dict[st
             # 컬럼 영향도 결과는 컬럼 쪽 캐시에 있다 — LLM 을 다시 돌리지 않는다.
             g = column_grid(imp["table"], imp["column"], "-")
             rows += [{"ifid": c["key"], "cause": imp["issue_text"],
-                      "mail_detail": imp.get("mail_detail", ""), **row}
+                      "mail_detail": imp.get("mail_detail", ""), "src_word": imp["column"], **row}
                      for row in g["grid"]["rows"]]
     impacts = [i for c in r["cases"] for i in c["impacts"]]
     counts = {k: sum(1 for row in rows if row["verdict"] == v) for k, v in VERDICT_LABEL.items()}
@@ -194,6 +194,9 @@ def incident_grid(period: str = "", key: str = "", subject: str = "") -> dict[st
                              {"key": "mail_detail", "label": "메일 오류 내용"}]
                  + [{"key": k, "label": v} for k, v in GRID_COLUMNS],
                  "rows": rows, "filter_key": "verdict",
+                 # 원인 컬럼이 행마다 다를 수 있어 강조할 이름은 행에서 읽는다.
+                 "source": {"root_key": "root", "path_key": "src_path", "line_key": "line",
+                            "word_key": "src_word"},
                  "tones": {VERDICT_LABEL["yes"]: "bad", VERDICT_LABEL["unknown"]: "warn",
                            VERDICT_LABEL["no"]: "muted"}},
         "warnings": r["warnings"],

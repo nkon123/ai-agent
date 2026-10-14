@@ -72,8 +72,19 @@ def scan_files(root_path: str) -> list[str]: ...
 |---|---|
 | 툴 `find_usage(name, root)` | `detail="summary"` — 건수와 파일 목록 일부 |
 | 리소스 `usage://detail/{root}/{name}` | `detail="full"` — 매칭된 줄 전부 |
+| 리소스 `source://snippet/{root}/{line}/{context}/{path}` | 소스 한 줄 앞뒤 `context` 줄(`-` 면 `SOURCE_SNIPPET_CONTEXT`=10). 그리드 행 더블클릭용 |
 | annotations | `readOnly=true`, `destructive=false` |
 
 ```
 GET /api/resource?template=usage://detail/{root}/{name}&root=SAMPLE&name=TOTAL_AMT
 ```
+
+### 소스 보기 — `source_snippet(root, rel, line, context)`
+
+그리드에서 줄을 더블클릭하면 화면이 읽는다. 화면이 주는 경로를 그대로 열면 `../../config_local.py`
+같은 경로로 아무 파일이나 읽히므로:
+
+- 경로는 **루트 이름 + 루트 기준 상대 경로**로만 받는다(`source_ref(path)` 가 만든다). 서버가 설정의
+  루트(`SOURCE_ROOTS`)와 합치고, 합친 경로가 그 루트 밖이거나 소스 확장자가 아니면 `denied`.
+- MCP SDK 도 리소스 인자의 `..`·절대 경로를 먼저 거부한다(기본 보안 검사를 끄지 않는다).
+- 없는 파일·못 읽은 파일은 `missing`. 내용은 로그에 남기지 않는다.

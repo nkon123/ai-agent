@@ -220,8 +220,15 @@ USE_LLM=false python agents/impact/column.py IF_ORDER_TMP TOTAL_AMT   # 규칙�
   접속하면 브라우저가 클립보드 API 를 막으므로 예전 방식으로 떨어진다
 - **CSV 저장** — 엑셀에서 한글이 안 깨지게 BOM 을 붙인다
 - 복사·저장은 지금 걸러 보고 있는 줄만 담는다
+- **줄을 더블클릭(또는 Enter)하면 소스 보기** — 그 줄 앞뒤 10줄을 줄 번호와 함께 띄우고, 그 줄은
+  배경색, 컬럼 이름은 테두리로 강조한다. '앞뒤 10줄 더 보기'(상한 `SOURCE_SNIPPET_MAX_CONTEXT`),
+  '경로:줄 복사'. Esc 는 소스 보기부터 닫는다. 리소스 `source://snippet/{root}/{line}/{context}/{path}`
+  (`agents/usage` `source_snippet`)를 읽는다.
 
-리소스는 `{title, subtitle, grid: {columns, rows, filter_key, tones}, warnings}` 를 준다.
+리소스는 `{title, subtitle, grid: {columns, rows, filter_key, tones, source}, warnings}` 를 준다.
+`source` 는 `{root_key, path_key, line_key, word | word_key}` — 행마다 소스 위치가 있는 표만 준다.
+경로는 **루트 기준 상대 경로**(`src_path`)다. 절대 경로를 화면·URL 에 싣지 않고, 서버가 설정의
+루트와 합친다.
 화면은 어떤 툴인지 모르고 이 모양만 그린다 — 다른 툴도 같은 모양을 주면 그리드가 붙는다.
 
 ## MCP

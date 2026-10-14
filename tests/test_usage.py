@@ -294,3 +294,76 @@ def test_overlapping_roots_count_a_file_once(two_roots: dict[str, Path], tmp_pat
     monkeypatch.setitem(ua.SOURCE_ROOTS, "ALL", str(tmp_path))     # erp·mes 를 포함한다
     r = run_usage("TOTAL_AMT", detail="full")
     assert r["files_scanned"] == 2 and r["hit_count"] == 2
+
+
+# --------------------------------------------------------------------------
+# 소스 보기 — 그리드에서 줄을 더블클릭하면 화면이 읽는다
+# --------------------------------------------------------------------------
+
+
+def _src_root(tmp_path: Path, monkeypatch: Any) -> Path:
+    from agents.usage import agent as usage_agent
+
+    root = tmp_path / "erp"
+    root.mkdir()
+    (root / "a.sql").write_text("\n".join(f"-- line {i}" for i in range(1, 51)) + "\n", encoding="utf-8")
+    (tmp_path / "secret.sql").write_text("SELECT 1;\n", encoding="utf-8")
+    (root / "notes.txt").write_text("x\n", encoding="utf-8")
+    monkeypatch.setattr(usage_agent, "SOURCE_ROOTS", {"ERP": str(root)})
+    return root
+
+
+def test_source_snippet_shows_lines_around(tmp_path: Path, monkeypatch: Any):
+    from agents.usage.agent import source_ref, source_snippet
+
+    root = _src_root(tmp_path, monkeypatch)
+    assert source_ref(str(root / "a.sql")) == "a.sql"
+    s = source_snippet("erp", "a.sql", 25)                  # 루트 이름은 대소문자 무시
+    assert (s["status"], s["root"], s["start"], s["end"], s["total"]) == ("ok", "ERP", 15, 35, 50)
+    assert s["lines"][10] == {"no": 25, "text": "-- line 25"}
+    # 파일 끝·처음에서 잘린다. 더 보기 상한도 지킨다.
+    s = source_snippet("ERP", "a.sql", 3, context=10)
+    assert (s["start"], s["end"]) == (1, 13)
+    assert source_snippet("ERP", "a.sql", 999)["line"] == 50
+    assert source_snippet("ERP", "a.sql", 25, context=10_000)["context"] == 200
+
+
+def test_source_snippet_opens_only_source_files_inside_roots(tmp_path: Path, monkeypatch: Any):
+    """화면이 주는 경로를 그대로 열면 '../' 로 아무 파일이나 읽힌다."""
+    from agents.usage.agent import source_ref, source_snippet
+
+    root = _src_root(tmp_path, monkeypatch)
+    for r, rel in (("ERP", "../secret.sql"),                  # .. 로 빠져나감
+                   ("ERP", str(tmp_path / "secret.sql")),     # 절대 경로
+                   ("ERP", "notes.txt"),                      # 소스 확장자 아님
+                   ("NOPE", "a.sql")):                        # 없는 루트
+        s = source_snippet(r, rel, 1)
+        assert s["status"] == "denied" and not s["lines"], rel
+    assert source_snippet("ERP", "none.sql", 1)["status"] == "missing"
+    assert source_ref(str(tmp_path / "secret.sql")) == ""     # 루트 밖 파일은 열 경로를 주지 않는다
+
+
+def test_source_snippet_resource(tmp_path: Path, monkeypatch: Any):
+    from urllib.parse import quote
+
+    _src_root(tmp_path, monkeypatch)
+    (tmp_path / "erp" / "sub").mkdir()
+    (tmp_path / "erp" / "sub" / "b.pc").write_text("int a;\nint b;\n", encoding="utf-8")
+
+    async def run() -> Any:
+        async with Client(build_server()) as c:
+            ok = await c.read_resource("source://snippet/ERP/25/3/a.sql")
+            dflt = await c.read_resource("source://snippet/ERP/25/-/a.sql")
+            sub = await c.read_resource("source://snippet/ERP/2/-/" + quote("sub/b.pc", safe=""))
+            out = [json.loads(x.contents[0].text) for x in (ok, dflt, sub)]
+            # '..'·절대 경로는 SDK 가 먼저 막는다(우리 검사까지 오지도 않는다).
+            for bad in ("source://snippet/ERP/1/-/" + quote("../secret.sql", safe=""),
+                        "source://snippet/ERP/1/-/" + quote(str(tmp_path / "secret.sql"), safe="")):
+                with pytest.raises(Exception):
+                    await c.read_resource(bad)
+            return out
+
+    ok, dflt, sub = asyncio.run(run())
+    assert [x["no"] for x in ok["lines"]] == list(range(22, 29))
+    assert (dflt["start"], dflt["end"]) == (15, 35)
+    assert sub["status"] == "ok" and sub["file"] == "sub/b.pc" and sub["line"] == 2

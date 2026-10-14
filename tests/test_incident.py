@@ -127,6 +127,7 @@ def test_grid_reuses_the_last_investigation(monkeypatch: Any):
     row = g["grid"]["rows"][0]
     assert row["cause"] == "IF_ORDER_TMP.ORD_NO 길이 초과(실제 25 > 최대 20)"
     assert row["mail_detail"].startswith("ORA-12899: value too large")
+    assert g["grid"]["source"]["word_key"] == "src_word" and row["src_word"] == "ORD_NO"
 
 
 def _run(coro: Any) -> Any:

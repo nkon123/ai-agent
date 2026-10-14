@@ -10,7 +10,7 @@ import json
 from config import SOURCE_ROOTS
 
 from agents.usage import run_usage
-from agents.usage.agent import scan_files
+from agents.usage.agent import scan_files, source_snippet
 
 from . import mcp, register
 
@@ -71,6 +71,22 @@ def find_usage(name: str, root: str = "") -> str:
     if r.get("warnings"):
         line += "\n확인 필요: " + "; ".join(r["warnings"])
     return line
+
+
+@mcp.resource(
+    "source://snippet/{root}/{line}/{context}/{path}",
+    name="source_snippet",
+    title="소스 일부",
+    description=("소스 루트 root 의 path(루트 기준 상대 경로) 파일에서 line 앞뒤 context 줄. 그리드에서 "
+                 "줄을 더블클릭하면 화면이 읽는다. 루트 밖·소스 아닌 파일은 열지 않는다. "
+                 "context 가 '-' 면 기본값."),
+    mime_type="application/json",
+)
+def source_snippet_resource(root: str, line: str, context: str, path: str) -> str:
+    """화면 표시용. LLM 컨텍스트를 거치지 않는다."""
+    ctx = int(context) if context.isdigit() else None
+    ln = int(line) if line.isdigit() else 1
+    return json.dumps(source_snippet(root, path, ln, ctx), ensure_ascii=False)
 
 
 @mcp.resource(

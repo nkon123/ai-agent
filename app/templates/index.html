@@ -301,6 +301,32 @@
   .tone.muted { color:var(--muted); }
   .gp-foot { padding:8px 16px; border-top:1px solid var(--line-2); font-size:12px; color:var(--muted); }
   @media (max-width:820px) { #gridpop { padding:0; } .gp { border-radius:0; height:100%; } }
+  /* 소스 보기 — 그리드 행 더블클릭. 그리드 위에 뜬다. */
+  .gp-body tr.srcable { cursor:pointer; }
+  .gp-body tr.srcable:focus-visible td { outline:none; background:var(--accent-weak); }
+  #srcpop { position:fixed; inset:0; z-index:60; display:none; align-items:center;
+            justify-content:center; background:rgba(10,14,24,.35); padding:36px; }
+  #srcpop.on { display:flex; }
+  .sv { background:var(--panel); border:1px solid var(--line); border-radius:14px;
+        box-shadow:0 20px 60px rgba(0,0,0,.35); width:min(1100px, 100%); max-height:100%;
+        display:flex; flex-direction:column; min-height:0; min-width:0; overflow:hidden; }
+  .sv-head { display:flex; align-items:flex-start; gap:10px; padding:12px 14px 10px; border-bottom:1px solid var(--line); }
+  .sv-head .sp { flex:1; min-width:0; }
+  .sv-head h2 { margin:0; font-size:14px; font-family:var(--mono); overflow-wrap:anywhere; }
+  .sv-head p { margin:3px 0 0; color:var(--muted); font-size:12px; }
+  .sv-tools { display:flex; flex-wrap:wrap; gap:6px; padding:8px 14px; border-bottom:1px solid var(--line-2); }
+  .sv-body { overflow:auto; min-height:0; flex:1; background:var(--code-bg); }
+  .sv-body table { border-collapse:collapse; font-family:var(--mono); font-size:12.5px; line-height:1.55; min-width:100%; }
+  .sv-body td { padding:0 12px; vertical-align:top; }
+  .sv-body td.ln { text-align:right; color:var(--faint); user-select:none; border-right:1px solid var(--line);
+                   background:var(--panel-2); min-width:3.5em; position:sticky; left:0; }
+  .sv-body td.tx { white-space:pre; color:var(--ink); }
+  .sv-body tr.hit td { background:var(--warn-bg); }
+  .sv-body tr.hit td.ln { color:var(--warn-ink); font-weight:700; box-shadow:inset 3px 0 0 var(--warn-ink); }
+  .sv-body mark { background:rgba(214,69,69,.18); color:inherit; border-radius:3px;
+                  box-shadow:0 0 0 1px rgba(214,69,69,.45); padding:0 1px; }
+  .sv-msg { padding:24px; color:var(--muted); text-align:center; }
+  @media (max-width:820px) { #srcpop { padding:0; } .sv { border-radius:0; height:100%; } }
 
   /* 좁은 화면에서는 옆칸을 접는다. 왼쪽은 메뉴 버튼으로 연다. */
   #scrim { display:none; }
@@ -377,6 +403,19 @@
     <div id="gp-warn"></div>
     <div class="gp-body" id="gp-body"></div>
     <div class="gp-foot" id="gp-foot"></div>
+  </div>
+</div>
+<div id="srcpop" role="dialog" aria-modal="true" aria-labelledby="sv-title">
+  <div class="sv">
+    <div class="sv-head">
+      <div class="sp"><h2 id="sv-title"></h2><p id="sv-sub"></p></div>
+      <button class="icon-btn" id="sv-close" type="button" aria-label="닫기"></button>
+    </div>
+    <div class="sv-tools">
+      <button class="act" id="sv-more" type="button">앞뒤 10줄 더 보기</button>
+      <button class="act" id="sv-copy" type="button">경로:줄 복사</button>
+    </div>
+    <div class="sv-body" id="sv-body"></div>
   </div>
 </div>
 
@@ -846,6 +885,12 @@ function renderGrid() {
     const tb = el("tbody");
     for (const r of rows) {
       const tr = el("tr");
+      if (g.source && r[g.source.path_key]) {
+        // 행마다 파일·줄이 있는 표 — 더블클릭(또는 Enter)으로 그 줄 앞뒤 소스를 띄운다.
+        tr.className = "srcable"; tr.tabIndex = 0; tr.title = "더블클릭: 소스 보기";
+        tr.addEventListener("dblclick", () => openSource(r));
+        tr.addEventListener("keydown", (e) => { if (e.key === "Enter") openSource(r); });
+      }
       for (const c of g.columns) {
         const v = r[c.key] ?? "";
         const td = el("td", c.key === "code" ? "code" : c.key === "reason" ? "wrap" : "nw");
@@ -859,8 +904,106 @@ function renderGrid() {
     t.appendChild(tb);
     body.appendChild(t);
   }
-  $("gp-foot").textContent = `${rows.length}줄 표시 / 전체 ${g.rows.length}줄 — 복사·CSV 는 지금 보이는 줄만 담는다`;
+  $("gp-foot").textContent = `${rows.length}줄 표시 / 전체 ${g.rows.length}줄 — 복사·CSV 는 지금 보이는 줄만 담는다`
+    + (g.source ? " · 줄을 더블클릭하면 소스 앞뒤를 본다" : "");
 }
+
+// ── 소스 보기 ────────────────────────────────────────────────────────────
+// 그리드가 grid.source = {root_key, path_key, line_key, word | word_key} 를 주면 행 더블클릭으로
+// source://snippet 리소스를 읽어 그 줄 앞뒤를 띄운다. 경로는 루트 기준 상대 경로다 — 서버가
+// 설정의 루트와 합치고, 루트 밖·소스 아닌 파일은 열지 않는다. 그 줄은 배경색, 강조할
+// 이름(컬럼)은 테두리로 표시한다.
+const sv = {root: "", file: "", line: 0, word: "", ctx: 10};
+
+function openSource(row) {
+  const s = gp.data.grid.source;
+  sv.root = String(row[s.root_key] || "");
+  sv.file = String(row[s.path_key] || "");
+  sv.line = parseInt(row[s.line_key], 10) || 1;
+  sv.word = String((s.word_key ? row[s.word_key] : s.word) || "");
+  sv.ctx = 10;
+  $("sv-title").textContent = `[${sv.root}] ${sv.file}:${sv.line}`;
+  $("srcpop").classList.add("on");
+  loadSource();
+}
+
+async function loadSource() {
+  $("sv-sub").textContent = "불러오는 중…";
+  $("sv-body").innerHTML = '<div class="sv-msg"><span class="spin" style="display:inline-block"></span></div>';
+  try {
+    const p = new URLSearchParams({template: "source://snippet/{root}/{line}/{context}/{path}",
+                                   root: sv.root, line: String(sv.line), context: String(sv.ctx),
+                                   path: sv.file});
+    const r = await fetch("/api/resource?" + p.toString());
+    const d = await r.json();
+    if (!r.ok || d.error) throw new Error(d.error || r.statusText);
+    renderSource(d);
+  } catch (e) {
+    $("sv-sub").textContent = "";
+    $("sv-body").innerHTML = "";
+    $("sv-body").appendChild(el("div", "sv-msg", "불러오지 못했다: " + e.message));
+  }
+}
+
+// 식별자 경계로 찾는다 — ORD_NO 를 찾을 때 ORD_NO_OLD 가 걸리지 않게(서버 쪽 ident_pattern 과 같은 뜻).
+function wordRe(w) {
+  if (!w) return null;
+  const e = w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  try { return new RegExp(`(?<![A-Za-z0-9_$#])${e}(?![A-Za-z0-9_$#])`, "gi"); } catch (x) { return null; }
+}
+
+function marked(text, re) {
+  const td = el("td", "tx");
+  if (!re) { td.textContent = text; return td; }
+  let last = 0;
+  for (const m of text.matchAll(re)) {
+    if (m.index > last) td.appendChild(document.createTextNode(text.slice(last, m.index)));
+    td.appendChild(el("mark", null, m[0]));
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) td.appendChild(document.createTextNode(text.slice(last)));
+  return td;
+}
+
+function renderSource(d) {
+  const body = $("sv-body");
+  body.innerHTML = "";
+  if (d.status !== "ok") {
+    $("sv-sub").textContent = "";
+    body.appendChild(el("div", "sv-msg", (d.warnings || []).join(" / ") || "열 수 없는 파일이다"));
+    $("sv-more").disabled = true;
+    return;
+  }
+  sv.line = d.line;
+  $("sv-title").textContent = `[${d.root}] ${d.file}:${d.line}`;
+  $("sv-sub").textContent = `${d.start}~${d.end}줄 / 전체 ${d.total}줄 · ${d.encoding}`
+    + (sv.word ? ` · 강조: ${sv.word}` : "");
+  $("sv-more").disabled = d.start <= 1 && d.end >= d.total;
+  const re = wordRe(sv.word), t = el("table"), tb = el("tbody");
+  let hit = null;
+  for (const ln of d.lines) {
+    const tr = el("tr", ln.no === d.line ? "hit" : null);
+    tr.appendChild(el("td", "ln", String(ln.no)));
+    tr.appendChild(marked(ln.text, re));
+    tb.appendChild(tr);
+    if (ln.no === d.line) hit = tr;
+  }
+  t.appendChild(tb);
+  body.appendChild(t);
+  // 그 줄을 가운데로. 위·아래 맥락이 같이 보여야 한다.
+  if (hit) body.scrollTop = Math.max(0, hit.offsetTop - body.clientHeight / 2 + hit.offsetHeight / 2);
+}
+
+$("sv-close").innerHTML = ICON.x;
+const closeSource = () => $("srcpop").classList.remove("on");
+$("sv-close").addEventListener("click", closeSource);
+$("srcpop").addEventListener("click", (e) => { if (e.target === $("srcpop")) closeSource(); });
+$("sv-more").addEventListener("click", () => { sv.ctx += 10; loadSource(); });
+$("sv-copy").addEventListener("click", async () => {
+  const b = $("sv-copy");
+  b.textContent = (await copyText(`[${sv.root}] ${sv.file}:${sv.line}`)) ? "복사됨" : "복사 실패";
+  setTimeout(() => { b.textContent = "경로:줄 복사"; }, 1500);
+});
 
 // 엑셀은 탭으로 칸을, 줄바꿈으로 행을 나눈다. 값 안의 탭·줄바꿈은 공백으로 바꿔야
 // 칸이 밀리지 않는다.
@@ -894,7 +1037,11 @@ const closeGrid = () => $("gridpop").classList.remove("on");
 $("gp-close").innerHTML = ICON.x;
 $("gp-close").addEventListener("click", closeGrid);
 $("gridpop").addEventListener("click", (e) => { if (e.target === $("gridpop")) closeGrid(); });
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeGrid(); });
+// Esc 는 위에 뜬 것부터 닫는다 — 소스 보기 → 그리드.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if ($("srcpop").classList.contains("on")) closeSource(); else closeGrid();
+});
 
 // ── 전송 ────────────────────────────────────────────────────────────────
 $("f").addEventListener("submit", async (e) => {

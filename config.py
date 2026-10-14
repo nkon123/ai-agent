@@ -86,6 +86,10 @@ SOURCE_ROOTS: Dict[str, str] = {
     "SAMPLE": _env_str("SOURCE_ROOT_SAMPLE", r"./samples/src"),
 }
 
+# 그리드에서 줄을 더블클릭하면 그 줄 앞뒤로 몇 줄을 보여 줄지. '더 보기'로 늘릴 수 있는 상한.
+SOURCE_SNIPPET_CONTEXT: int = _env_int("SOURCE_SNIPPET_CONTEXT", 10)
+SOURCE_SNIPPET_MAX_CONTEXT: int = _env_int("SOURCE_SNIPPET_MAX_CONTEXT", 200)
+
 # 확장자 → 언어. 소스 스캔(usage)과 SQL 문장 추출(impact)이 함께 쓴다.
 # 여기 없는 확장자는 아예 스캔하지 않는다 — '무엇을 안 보는지'가 명시되어야
 # 결과가 비었을 때 원인을 안다.

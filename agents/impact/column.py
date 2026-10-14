@@ -40,6 +40,7 @@ if str(_ROOT) not in sys.path:
 
 from agents.usage.agent import (  # noqa: E402
     LANG_BY_SUFFIX,
+    source_ref,
     resolve_roots,
     roots_label,
     scan_roots,
@@ -649,6 +650,7 @@ def column_grid(table: str, column: str, root: str = "") -> dict[str, Any]:
             "rule_verdict": VERDICT_LABEL[h["rule_verdict"]]
             + (" ≠ LLM" if h.get("conflict") else ""),
             "file": h["file"],
+            "src_path": source_ref(h["file"], h["root"]),
         }
         for h in r["hits"]
     ]
@@ -661,6 +663,10 @@ def column_grid(table: str, column: str, root: str = "") -> dict[str, Any]:
         "grid": {"columns": [{"key": k, "label": v} for k, v in GRID_COLUMNS], "rows": rows,
                  # 화면은 이 칸의 값으로 걸러 보기 버튼을 만들고 색을 입힌다.
                  "filter_key": "verdict",
+                 # 행마다 파일·줄이 있다 — 화면이 더블클릭으로 소스 앞뒤를 띄우고 이 이름을 강조한다.
+                 # 경로는 루트 기준 상대 경로로 준다(src_path) — 절대 경로를 화면·URL 에 싣지 않는다.
+                 "source": {"root_key": "root", "path_key": "src_path", "line_key": "line",
+                            "word": r["column"]},
                  "tones": {VERDICT_LABEL["yes"]: "bad", VERDICT_LABEL["unknown"]: "warn",
                            VERDICT_LABEL["no"]: "muted"}},
         "warnings": r["warnings"],

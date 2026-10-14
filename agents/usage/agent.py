@@ -31,7 +31,13 @@ if str(_ROOT) not in sys.path:
 
 from langgraph.graph import END, START, StateGraph  # noqa: E402
 
-from config import SOURCE_LANG_BY_SUFFIX, SOURCE_ROOTS, USE_LLM  # noqa: E402
+from config import (  # noqa: E402
+    SOURCE_LANG_BY_SUFFIX,
+    SOURCE_ROOTS,
+    SOURCE_SNIPPET_CONTEXT,
+    SOURCE_SNIPPET_MAX_CONTEXT,
+    USE_LLM,
+)
 from core.cache import cached  # noqa: E402
 from core.text import ident_pattern, read_text_with_encoding, strip_comments  # noqa: E402
 
@@ -142,6 +148,60 @@ def scan_roots(roots: list[tuple[str, str]]) -> tuple[list[tuple[str, str]], lis
                 seen.add(key)
                 files.append((label, f))
     return files, warnings
+
+
+def source_ref(path: str, root: str = "") -> str:
+    """파일의 루트 기준 상대 경로('sub/a.sql'). 화면은 절대 경로 대신 (루트, 이 경로)로 소스를 연다.
+
+    root 를 주면 그 루트 기준, 아니면 파일이 든 첫 루트 기준. 루트 밖이면 빈 값.
+    """
+    try:
+        target = Path(path).resolve()
+    except (OSError, ValueError):
+        return ""
+    labels = [root] if root in SOURCE_ROOTS else list(SOURCE_ROOTS)
+    for label in labels:
+        try:
+            return target.relative_to(Path(SOURCE_ROOTS[label]).resolve()).as_posix()
+        except (OSError, ValueError):
+            continue
+    return ""
+
+
+def source_snippet(root: str, rel: str, line: int, context: int | None = None) -> dict[str, Any]:
+    """소스 루트 root 의 rel 파일에서 line 앞뒤 context 줄. 그리드 행을 더블클릭하면 화면이 읽는다.
+
+    화면은 절대 경로가 아니라 (루트 이름, 루트 기준 상대 경로)를 준다. 경로를 그대로 받아
+    열면 '../../config_local.py' 같은 경로로 아무 파일이나 읽힌다. 합친 경로가 그 루트 밖이거나
+    소스 확장자가 아니면 열지 않는다.
+    돌려주는 것: {status, root, file, line, start, end, total, encoding, lines:[{no, text}], warnings}
+        status  ok | denied(루트 밖·소스 아님·없는 루트) | missing(파일 없음·못 읽음)
+    """
+    context = SOURCE_SNIPPET_CONTEXT if context is None else context
+    context = max(0, min(int(context), SOURCE_SNIPPET_MAX_CONTEXT))
+    out: dict[str, Any] = {"status": "denied", "root": root, "file": rel, "line": line,
+                           "start": 0, "end": 0, "total": 0, "encoding": "", "lines": [],
+                           "context": context, "warnings": []}
+    label = {k.upper(): k for k in SOURCE_ROOTS}.get((root or "").strip().upper())
+    if not label:
+        out["warnings"].append(f"'{root}' 은 설정에 없는 소스 루트다")
+        return out
+    base = Path(SOURCE_ROOTS[label]).resolve()
+    target = (base / rel).resolve()
+    if not target.is_relative_to(base) or target.suffix.lower() not in LANG_BY_SUFFIX:
+        out["warnings"].append("소스 루트 안의 소스 파일이 아니라 열지 않았다")
+        return out
+    out["root"] = label
+    try:
+        text, enc = read_text_with_encoding(target)
+    except OSError as e:
+        return {**out, "status": "missing", "warnings": [f"파일을 읽지 못했다 — {type(e).__name__}"]}
+    lines = text.splitlines()
+    line = max(1, min(int(line), len(lines) or 1))
+    start, end = max(1, line - context), min(len(lines), line + context)
+    return {**out, "status": "ok", "line": line, "start": start, "end": end, "total": len(lines),
+            "encoding": enc,
+            "lines": [{"no": n, "text": lines[n - 1]} for n in range(start, end + 1)]}
 
 
 # --------------------------------------------------------------------------

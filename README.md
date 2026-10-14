@@ -165,7 +165,7 @@ tests/              core/ + MCP 회귀 테스트
 | `find_interface_tables` | combo | IFID 하나 → 참조 테이블(출발·도착)·경로 (메일 안 읽음) |
 | `find_table_interfaces` | combo | 테이블 하나 → 그 테이블을 출발·도착으로 쓰는 인터페이스 (메일 안 읽음) |
 | `analyze_table_impact` | combo | 테이블을 쓰는 SQL 문장 찾기 |
-| `analyze_column_impact` | combo | 테이블의 컬럼 하나 → 쓰는 곳 전부 + 줄마다 LLM 판정, 컬럼 없이 테이블만 쓰는 문장도 함께. 화면에서 [표로 보기] 그리드·엑셀 복사 |
+| `analyze_column_impact` | combo | 테이블의 컬럼 하나 → 쓰는 곳 전부 + 줄마다 LLM 판정, 컬럼 없이 테이블만 쓰는 문장도 함께. 화면에서 [표로 보기] 그리드·엑셀 복사, 줄 더블클릭으로 소스 앞뒤 보기 |
 | `tune_query` | combo | SQL 진단 + 인덱스 제안 (실행 안 함) |
 | `find_usage` | combo | 소스에서 식별자 사용처 찾기 |
 | `echo_classify` | combo | 문장 분류 (샘플) |

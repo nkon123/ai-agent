@@ -24,6 +24,10 @@ SOURCE_ROOTS = {
     "MES": r"D:\src\mes",
 }
 
+# 그리드에서 줄을 더블클릭할 때 보여 줄 앞뒤 줄 수, '더 보기' 상한
+# SOURCE_SNIPPET_CONTEXT = 10
+# SOURCE_SNIPPET_MAX_CONTEXT = 200
+
 # 확장자 → 언어. 기본값에 .pc(Pro*C) / .prc(프로시저) / .xml(UI 쿼리)이
 # 들어 있다. 사내에서 다른 확장자를 쓰면 여기서 바꾼다.
 # 여기 없는 확장자는 아예 스캔하지 않는다.
