@@ -293,6 +293,13 @@ IFERR_MASTER_FIELDS: Dict[str, str] = {
     "sch_m": _env_str("IFERR_FIELD_SCH_M", ""),       # 분
 }
 
+# 인터페이스 마스터를 DB 대신 JSON 파일에서 읽는다 — DB 가 없는 데모·오프라인용.
+# 비워 두면(기본) 쓰지 않는다. 채우면 마스터 조회(IFID→테이블, 테이블→IFID)는 DB 를
+# 보지 않고 이 파일만 본다. 답에는 '마스터: 파일' 이 찍힌다.
+# 행은 IFERR_MASTER_FIELDS 의 이름(id, src_sys, tar_sys, src_table, tar_table, sch_day,
+# sch_h, sch_m)을 키로 쓴다. 예: samples/demo/if_master.json (가짜 값)
+IFERR_MASTER_FILE: str = _env_str("IFERR_MASTER_FILE", "")
+
 # 테이블 → 그 테이블을 출발·도착으로 쓰는 인터페이스 (find_table_interfaces).
 # 비워 두면 위 IFERR_MASTER_TABLE/FIELDS 로 자동 생성한다(src_table·tar_table 필요).
 # 직접 쓸 때 바인드는 :tname (대문자 테이블 이름) 과 :dotname ('.' + 이름,
@@ -318,6 +325,10 @@ IMPACT_MAX_STATEMENTS: int = _env_int("IMPACT_MAX_STATEMENTS", 3)
 # 4B 모델로 줄당 1~3초라 40줄이면 1~2분이다(툴 타임아웃 MCP_TOOL_TIMEOUT_SEC 안쪽).
 # 넘는 줄은 'LLM 미확인'으로 남긴다 — 버리지 않는다.
 COLUMN_IMPACT_MAX_LLM: int = _env_int("COLUMN_IMPACT_MAX_LLM", 40)
+# 인터페이스 오류 확인(check_interface_errors)이 이어서 조사할 원인 컬럼 수 상한.
+# 원인 컬럼 하나가 컬럼 영향도 한 번(LLM 최대 COLUMN_IMPACT_MAX_LLM 줄)이다.
+# 툴 타임아웃(MCP_TOOL_TIMEOUT_SEC) 안에 끝나게 작게 둔다. 넘는 건 '확인 필요'로 알린다.
+INCIDENT_MAX_IMPACTS: int = _env_int("INCIDENT_MAX_IMPACTS", 2)
 # 그리드에 담을 최대 줄 수. 흔한 컬럼(STATUS 등)은 수천 줄이 나온다.
 COLUMN_IMPACT_MAX_HITS: int = _env_int("COLUMN_IMPACT_MAX_HITS", 2000)
 

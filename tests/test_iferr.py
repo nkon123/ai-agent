@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,9 @@ def eml_backend(monkeypatch: Any) -> None:
     # 하루만 지나도 샘플이 범위 밖으로 밀려 테스트가 깨진다.
     # 기간 해석 자체는 parse_period 로 따로 검증하므로 여기서는 넉넉히 잡는다.
     monkeypatch.setattr(outlook, "MAIL_LOOKBACK_HOURS", 24 * 3650)
+    # 툴은 '3일'처럼 기간을 직접 넘긴다. 그때의 기준 시각을 샘플 날짜(2026-09-03)
+    # 다음 날로 고정한다 — 실제 시계를 쓰면 날이 지날수록 0통이 되어 깨졌다.
+    monkeypatch.setattr(outlook, "_now", lambda: datetime(2026, 9, 4, 9, 0))
     # 이 파일은 키워드·정규식 판정을 고정한다. LLM 판정은 test_iferr_llm.py 가
     # 가짜 LLM 으로 따로 본다 — 여기서 실제 Ollama 를 부르면 결과가 모델에 달린다.
     monkeypatch.setattr(iferr, "IFERR_MAIL_JUDGE", "keyword")
@@ -1172,6 +1176,111 @@ def test_mcp_find_interface_tables_says_unknown():
 
     text = _run(_with_client(call)).content[0].text
     assert "확인 불가" in text and "없다는 뜻이 아니다" in text
+
+
+# --------------------------------------------------------------------------
+# 원인 컬럼 추출 — 메일의 오류 내용에서 '어느 테이블의 어느 컬럼'
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text, want",
+    [
+        ('ORA-12899: value too large for column "ERP"."IF_ORDER_TMP"."ORD_NO" '
+         "(actual: 25, maximum: 20)",
+         ("size", "ERP", "IF_ORDER_TMP", "ORD_NO", "25", "20")),
+        # 한글 Oracle 메시지
+        ('ORA-12899: "ERP"."IF_ORDER_TMP"."ORD_NO" 열에 대한 값이 너무 큼(실제: 25, 최대값: 20)',
+         ("size", "ERP", "IF_ORDER_TMP", "ORD_NO", "25", "20")),
+        ('ORA-01400 cannot insert NULL into ("ERP"."ORD_HDR"."CUST_CD")',
+         ("null", "ERP", "ORD_HDR", "CUST_CD", "", "")),
+        # 스키마 없이 테이블.컬럼
+        ('ORA-12899: value too large for column "IF_ORDER_TMP"."ORD_NO" (actual: 9, maximum: 8)',
+         ("size", "", "IF_ORDER_TMP", "ORD_NO", "9", "8")),
+    ],
+)
+def test_extract_issues_from_oracle_messages(text: str, want: tuple[str, ...]):
+    i = iferr.extract_issues(text)[0]
+    assert (i["kind"], i["schema"], i["table"], i["column"], i["actual"], i["max"]) == want
+
+
+def test_issue_without_column_name_is_kept_as_unknown_column():
+    """ORA-01438 은 컬럼 이름이 없다. '원인 없음'이 아니라 '컬럼 미상'으로 남긴다."""
+    i = iferr.extract_issues("ORA-01438: value larger than specified precision")[0]
+    assert i["kind"] == "precision" and i["column"] == ""
+    assert "컬럼 미상" in iferr.issue_text(i)
+
+
+def test_issue_text():
+    i = iferr.extract_issues('ORA-12899: value too large for column "E"."T"."C" (actual: 25, maximum: 20)')[0]
+    assert iferr.issue_text(i) == "T.C 길이 초과(실제 25 > 최대 20)"
+
+
+def test_llm_columns_must_be_in_the_mail():
+    """LLM 이 낸 컬럼은 메일에 적혀 있을 때만 쓴다 — 지어낸 컬럼으로 영향도를 조사하면 안 된다."""
+    text = "주문번호(ORD_NO) 길이가 넘어 실패했습니다"
+    got = iferr.verify_llm_columns(text, ["ORD_NO", "CUST_NM", "IF_ORDER_TMP.ORD_NO"])
+    assert [(g["table"], g["column"]) for g in got] == [("", "ORD_NO")]   # 테이블은 메일에 없다
+
+
+def test_table_name_in_oracle_message_is_not_an_interface_key():
+    """IF_ 로 시작하는 인터페이스 테이블이 if-prefix 규칙에 키로 잡혔다(실측)."""
+    mail = outlook.Mail(
+        subject="[연계오류] 주문 수신 실패",
+        body='IF_ID : IF_ORD_RECV\n오류내용 : ORA-12899: value too large for column '
+             '"ERP"."IF_ORDER_TMP"."ORD_NO" (actual: 25, maximum: 20)',
+        sender="a@b.c", received=None, source="x.eml")
+    j = iferr.judge_mails([mail])[0][0]
+    assert [k["key"] for k in j["keys"]] == ["IF_ORD_RECV"]
+    assert j["issues"][0]["column"] == "ORD_NO"
+
+
+def test_case_carries_issues_from_its_mails(tmp_path: Path, monkeypatch: Any):
+    from email.message import EmailMessage
+
+    msg = EmailMessage()
+    msg["Subject"], msg["Date"] = "[연계오류] 주문 수신 실패", "Thu, 03 Sep 2026 13:00:00 -0000"
+    msg.set_content('IF_ID : IF_ORD_RECV\nORA-12899: value too large for column '
+                    '"ERP"."IF_ORDER_TMP"."ORD_NO" (actual: 25, maximum: 20)\n')
+    (tmp_path / "a.eml").write_bytes(bytes(msg))
+    monkeypatch.setattr(outlook, "MAIL_EML_DIR", str(tmp_path))
+    c = run_iferr(detail="summary")["cases"][0]
+    assert c["key"] == "IF_ORD_RECV"
+    assert [(i["table"], i["column"]) for i in c["issues"]] == [("IF_ORDER_TMP", "ORD_NO")]
+
+
+# --------------------------------------------------------------------------
+# 파일 마스터 — DB 가 없는 데모·오프라인
+# --------------------------------------------------------------------------
+
+DEMO_MASTER = str(Path(__file__).resolve().parents[1] / "samples" / "demo" / "if_master.json")
+
+
+def test_master_file_answers_without_db(monkeypatch: Any):
+    monkeypatch.setattr(iferr, "IFERR_MASTER_FILE", DEMO_MASTER)
+    monkeypatch.setattr(iferr.oracle, "query", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("DB 를 보면 안 된다")))
+    c = run_iferr(key="if_ord_recv", detail="full")["cases"][0]
+    assert c["db"]["status"] == "found" and c["db"]["source"] == "file"
+    assert c["flows"][0]["tar_table"] == "IF_ORDER_TMP"
+    assert c["flows"][0]["schedule"] == "매일 08:30, 12:00"
+    assert run_iferr(key="NOPE", detail="full")["cases"][0]["db"]["status"] == "missing"
+
+
+def test_master_file_reverse_lookup(monkeypatch: Any):
+    monkeypatch.setattr(iferr, "IFERR_MASTER_FILE", DEMO_MASTER)
+    r = iferr.table_interfaces("if_order_tmp")
+    assert r["status"] == "found"
+    assert [(i["id"], i["roles"]) for i in r["interfaces"]] == [("IF_ORD_RECV", ["target"])]
+
+
+def test_broken_master_file_is_unknown_not_missing(tmp_path: Path, monkeypatch: Any):
+    bad = tmp_path / "m.json"
+    bad.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(iferr, "IFERR_MASTER_FILE", str(bad))
+    r = run_iferr(key="X1", detail="full")
+    assert r["cases"][0]["db"]["status"] == "unknown"
+    assert any("마스터 파일" in w for w in r["warnings"])
 
 
 # --------------------------------------------------------------------------

@@ -131,12 +131,16 @@ agents/
   usage/            식별자 사용처 찾기 — core/ 를 실제로 쓰는 샘플
   iferr/            인터페이스 오류 메일 → 키 추출 → DB 영향 확인
   impact/           테이블 영향도 — 소스에서 SQL 문장을 잘라 읽기/쓰기 판정
+                    column.py: 컬럼 영향도 — 컬럼이 나온 줄 전부 + 줄마다 판정
+  incident/         오류 메일 → IFID → 테이블 → 원인 컬럼 → 컬럼 영향도를 한 번에
   sqltune/          SQL 튜닝 진단 — 기준 문서 기반 규칙 + 실행계획 + 인덱스 제안
 core/sqlstmt.py     완결된 SQL 문장 잘라내기·판정
 core/progress.py    에이전트 진행 상황 통로 (듣는 곳 없으면 조용히 버림)
 core/outlook.py     Outlook 메일 읽기 (COM / .eml). 읽기 전용
 samples/src/        usage 를 바로 돌려 볼 예제 소스 (함정 포함)
 samples/mail/       iferr 를 Outlook 없이 돌려 볼 예제 메일
+samples/colimpact/  컬럼 영향도 평가용 소스 (같은 이름 컬럼이 두 테이블에 있다)
+samples/demo/       발표 데모 — 가짜 마스터, 오늘 날짜 메일 생성, run_demo.bat
 mcp_server/         MCP 서버 (툴 계층)
   __main__.py       python -m mcp_server
   tools/            MCP 툴 껍데기 + 자동 등록 레지스트리
@@ -157,7 +161,7 @@ tests/              core/ + MCP 회귀 테스트
 
 | 툴 | 등급 | 무엇 |
 |---|---|---|
-| `check_interface_errors` | combo | 오류 메일 → 키 → DB → 영향까지 한 번에 |
+| `check_interface_errors` | combo | 오류 메일 → 키 → 마스터 테이블 → 메일의 원인 컬럼 → 컬럼 영향도까지 한 번에 ([표로 보기]) |
 | `find_interface_tables` | combo | IFID 하나 → 참조 테이블(출발·도착)·경로 (메일 안 읽음) |
 | `find_table_interfaces` | combo | 테이블 하나 → 그 테이블을 출발·도착으로 쓰는 인터페이스 (메일 안 읽음) |
 | `analyze_table_impact` | combo | 테이블을 쓰는 SQL 문장 찾기 |
@@ -192,6 +196,7 @@ tests/              core/ + MCP 회귀 테스트
 | `usage` | 소스에서 식별자 사용처 찾기 | `core/` 를 실제로 쓰는 형태. 캐시 키 설계, 근거 남기기, '없다'와 '모른다' 구분 |
 | `iferr` | 인터페이스 오류 메일 → DB 영향 확인 | 외부 시스템(Outlook·Oracle) 연동. 실패를 '확인 불가'로 남기기, 개인정보 마스킹 |
 | `impact` | 테이블이 소스 어디서 읽히고 쓰이는지 | 문장 단위 판정, LLM 이 규칙을 뒤집지 않게 하기 |
+| `incident` | 오류 한 건을 원인 컬럼 영향도까지 | 소형 모델 대신 에이전트가 단계를 잇는다. 규칙으로 정할 것은 규칙으로 |
 | `sqltune` | 느린 SQL 진단·인덱스 제안 | 안전 게이트(SELECT 만), 판정 기준을 문서로 분리 |
 
 `usage` 를 돌려 보면 `core/text.py` 가 왜 그렇게 생겼는지 바로 보인다.
@@ -212,6 +217,16 @@ order_pkg.sql : 5 | UPDATE ORDERS SET ...    ← SQL
 주석 속 `TOTAL_AMT`, 문자열 속 `"/* TOTAL_AMT */"`, `IF_A` 의 `A` 는
 **잡히지 않는다**. 세 가지 다 실제로 오탐이 났던 형태다
 (`samples/README.md` 에 무엇을 심어 뒀는지 적어 두었다).
+
+## 발표 데모 — "오늘 인터페이스 오류 확인해줘" 한마디
+
+```bat
+samples\demo\run_demo.bat
+```
+
+가짜 메일(오늘 날짜로 그때 만든다)·가짜 인터페이스 마스터·샘플 소스로 챗봇을 띄운다.
+`config_local.py` 는 건드리지 않는다(이 창의 환경변수만 쓴다). Ollama 주소가 다르면
+`set OLLAMA_HOST=...` 후 실행. 흐름과 실측은 `agents/incident/README.md`.
 
 ## 화면 구성
 

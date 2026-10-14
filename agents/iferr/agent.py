@@ -42,6 +42,7 @@ from config import (  # noqa: E402
     IFERR_LLM_MAX_MAILS,
     IFERR_MAIL_JUDGE,
     IFERR_MASTER_FIELDS,
+    IFERR_MASTER_FILE,
     IFERR_MAX_ROWS,
     IFERR_SQL,
     IFERR_STATUS_COLUMNS,
@@ -109,6 +110,110 @@ def extract_keys(text: str) -> list[dict[str, str]]:
                 }
             )
     return found
+
+
+# --------------------------------------------------------------------------
+# 원인 컬럼 추출 — 메일의 오류 내용에서 '어느 테이블의 어느 컬럼이 문제인가'
+#
+# 사이즈 초과(ORA-12899)·NULL(ORA-01400)은 Oracle 메시지 형식이 정해져 있어
+# 규칙으로 정확히 뽑힌다. 영문·한글 메시지 둘 다 본다. 형식 없이 사람이 쓴
+# 메일은 LLM 이 컬럼 이름을 내고, 메일에 그 이름이 실제로 있을 때만 쓴다.
+# --------------------------------------------------------------------------
+
+_Q = r'"([^"]+)"'                     # "ERP" / "ORD_HDR" / "CUST_NM"
+_QUALIFIED = rf"{_Q}(?:\.{_Q})?(?:\.{_Q})?"
+_ISSUE_RULES: list[tuple[str, str, re.Pattern[str]]] = [
+    # ORA-12899: value too large for column "ERP"."IF_ORDER_TMP"."ORD_NO" (actual: 25, maximum: 20)
+    # ORA-12899: "ERP"."IF_ORDER_TMP"."ORD_NO" 열에 대한 값이 너무 큼(실제: 25, 최대값: 20)
+    ("ora-12899", "size", re.compile(rf"ORA-12899\b[^\"\n]*{_QUALIFIED}", re.IGNORECASE)),
+    # ORA-01400: cannot insert NULL into ("ERP"."ORD_HDR"."CUST_CD")
+    # ORA-01400: NULL을 ("ERP"."ORD_HDR"."CUST_CD") 안에 삽입할 수 없습니다
+    ("ora-01400", "null", re.compile(rf"ORA-01400\b[^\"\n]*\(?{_QUALIFIED}", re.IGNORECASE)),
+]
+# 길이: (actual: 25, maximum: 20) / (실제: 25, 최대값: 20)
+_SIZES = re.compile(r"(?:actual|실제)\s*[:：]\s*(\d+)\D{1,12}?(?:maximum|최대값?)\s*[:：]\s*(\d+)",
+                    re.IGNORECASE)
+# 컬럼 이름 없이 오는 사이즈 계열 — '컬럼은 모른다'를 남긴다.
+_ISSUE_NO_COLUMN = [
+    ("ora-01401", "size", re.compile(r"ORA-01401\b", re.IGNORECASE)),
+    ("ora-01438", "precision", re.compile(r"ORA-01438\b", re.IGNORECASE)),
+]
+ISSUE_LABEL = {"size": "길이 초과", "null": "NULL 불가", "precision": "숫자 자릿수 초과",
+               "other": "컬럼 오류"}
+
+
+def extract_issues(text: str) -> list[dict[str, str]]:
+    """오류 내용에서 원인 컬럼을 뽑는다. [{kind, rule, schema, table, column, actual, max, evidence}]
+
+    "A"."B"."C" 는 스키마.테이블.컬럼, "B"."C" 는 테이블.컬럼으로 본다. 컬럼 하나만
+    따옴표로 오면 테이블은 비워 둔다 — 지어내지 않는다(호출부가 마스터의 도착
+    테이블로 채운다). 같은 (테이블, 컬럼) 은 한 번만.
+    """
+    text = text or ""
+    found: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for rule, kind, pat in _ISSUE_RULES:
+        for m in pat.finditer(text):
+            parts = [p for p in m.groups() if p]
+            column = parts[-1]
+            table = parts[-2] if len(parts) >= 2 else ""
+            schema = parts[-3] if len(parts) >= 3 else ""
+            key = (table.upper(), column.upper())
+            if key in seen:
+                continue
+            seen.add(key)
+            tail = text[m.end(): m.end() + 80]
+            sizes = _SIZES.search(tail) if kind == "size" else None
+            start, end = max(0, m.start() - 10), min(len(text), m.end() + 50)
+            found.append({
+                "kind": kind, "rule": rule, "schema": schema, "table": table,
+                "column": column, "actual": sizes.group(1) if sizes else "",
+                "max": sizes.group(2) if sizes else "",
+                "evidence": " ".join(text[start:end].split()),
+            })
+    for rule, kind, pat in _ISSUE_NO_COLUMN:
+        m = pat.search(text)
+        if m and not any(f["kind"] == kind for f in found):
+            start, end = max(0, m.start() - 10), min(len(text), m.end() + 60)
+            found.append({"kind": kind, "rule": rule, "schema": "", "table": "", "column": "",
+                          "actual": "", "max": "", "evidence": " ".join(text[start:end].split())})
+    return found
+
+
+def verify_llm_columns(text: str, columns: list[str]) -> list[dict[str, str]]:
+    """LLM 이 낸 원인 컬럼 중 메일에 실제로 적힌 것만 issue 로 만든다.
+
+    'ERP.ORD_HDR.CUST_NM' 처럼 점으로 이어 내면 마지막 조각이 컬럼, 그 앞이 테이블이다.
+    지어낸 컬럼으로 영향도를 조사하면 엉뚱한 프로그램이 '영향 있음'으로 나온다.
+    """
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for raw in columns:
+        cand = str(raw).strip().strip("[](){}<>\"'`.,:;")
+        parts = [p.strip('"') for p in cand.split(".") if p.strip('"')]
+        if not parts:
+            continue
+        column, table = parts[-1], (parts[-2] if len(parts) >= 2 else "")
+        if not _ID_SHAPE.fullmatch(column) or column.upper() in seen:
+            continue
+        m = ident_pattern(column, re.IGNORECASE).search(text)
+        if not m:
+            continue
+        if table and not ident_pattern(table, re.IGNORECASE).search(text):
+            table = ""                     # 테이블은 메일에 없다 — 버리고 마스터로 채운다
+        seen.add(column.upper())
+        start, end = max(0, m.start() - 30), min(len(text), m.end() + 30)
+        out.append({"kind": "other", "rule": "llm", "schema": "", "table": table,
+                    "column": m.group(0), "actual": "", "max": "",
+                    "evidence": " ".join(text[start:end].split())})
+    return out
+
+
+def issue_text(i: dict[str, str]) -> str:
+    """'IF_ORDER_TMP.ORD_NO 길이 초과(실제 25 > 최대 20)'."""
+    where = ".".join(x for x in (i.get("table"), i.get("column")) if x) or "컬럼 미상"
+    size = f"(실제 {i['actual']} > 최대 {i['max']})" if i.get("actual") and i.get("max") else ""
+    return f"{where} {ISSUE_LABEL.get(i.get('kind', ''), '컬럼 오류')}{size}"
 
 
 def normalize_subject(subject: str) -> str:
@@ -320,7 +425,9 @@ def _llm_prompt(mail: Mail) -> str:
         f"{hint}"
         "테이블 이름, 오류 코드(ORA-01400 등), 건수, 날짜, 사람 이름은 ID 가 아니다. "
         "ID 가 없으면 빈 목록. 메일에 없는 ID 를 만들지 마라.\n"
-        "3) reason: 판단 근거를 한 문장으로.\n\n"
+        "3) cause_columns: 오류 원인으로 적힌 DB 컬럼 이름(예: 길이 초과·NULL 불가가 난 컬럼)을 "
+        "적힌 글자 그대로. 테이블이 함께 적혀 있으면 '테이블.컬럼'. 없으면 빈 목록.\n"
+        "4) reason: 판단 근거를 한 문장으로.\n\n"
         f"제목: {mail.subject}\n"
         f"본문:\n{body}"
     )
@@ -340,12 +447,14 @@ def llm_judge_mail(mail: Mail) -> dict[str, Any]:
     class MailVerdict(BaseModel):
         is_error: bool = Field(description="인터페이스 처리 실패·오류를 알리는 메일인가")
         interface_ids: list[str] = Field(description="메일에 적힌 인터페이스 ID, 적힌 그대로")
+        cause_columns: list[str] = Field(description="오류 원인으로 적힌 DB 컬럼, 적힌 그대로")
         reason: str = Field(description="판단 근거 한 문장")
 
     v, note = invoke_structured(MailVerdict, _llm_prompt(mail))
     return {
         "is_error": bool(v.is_error),
         "interface_ids": [str(x) for x in (v.interface_ids or [])][:20],
+        "cause_columns": [str(x) for x in (v.cause_columns or [])][:10],
         "reason": str(v.reason or "").strip()[:200],
         "note": note,
     }
@@ -430,10 +539,20 @@ def judge_mails(mails: list[Mail]) -> tuple[list[dict[str, Any]], list[str]]:
         conflict = bool(verdict) and bool(hit) and not llm_error
 
         keys: list[dict[str, str]] = []
+        issues: list[dict[str, str]] = []
         if is_error:
-            keys = extract_keys(text)
+            # 원인 컬럼: Oracle 메시지 규칙이 먼저, 컬럼을 못 뽑았을 때만 LLM 답을 쓴다.
+            issues = extract_issues(text)
+            if verdict and not any(i["column"] for i in issues):
+                issues += verify_llm_columns(text, verdict.get("cause_columns") or [])
+            # 오류 메시지가 테이블·컬럼이라고 밝힌 이름은 인터페이스 키가 아니다.
+            # 인터페이스 테이블은 IF_ 로 시작하는 일이 흔해 if-prefix 규칙이
+            # "ERP"."IF_ORDER_TMP" 를 키로 뽑았다(실측) — 없는 IFID 로 조회하게 된다.
+            not_keys = {n.upper() for i in issues for n in (i["schema"], i["table"], i["column"]) if n}
+            keys = [k for k in extract_keys(text) if k["key"].upper() not in not_keys]
             if verdict:
                 llm_keys, rejected = verify_llm_keys(text, verdict["interface_ids"])
+                llm_keys = [k for k in llm_keys if k["key"].upper() not in not_keys]
                 dropped += rejected
                 have = {k["key"].upper(): k for k in keys}
                 for k in llm_keys:
@@ -450,6 +569,7 @@ def judge_mails(mails: list[Mail]) -> tuple[list[dict[str, Any]], list[str]]:
             "via_prefix": via_prefix,
             "judged_by": judged_by,
             "keys": keys,
+            "issues": issues,
             "llm": None if verdict is None else
                    {"is_error": verdict["is_error"], "reason": verdict["reason"]},
             "conflict": conflict,
@@ -526,6 +646,7 @@ def find_keys(state: IfErrState) -> IfErrState:
                     "found_by": "argument",
                     "evidence": "사용자가 직접 지정",
                     "mails": [],
+                    "issues": [],
                 }
             ]
         }
@@ -554,8 +675,15 @@ def find_keys(state: IfErrState) -> IfErrState:
                     # 이 메일을 무엇이 오류로 봤는가 — 키를 무엇이 뽑았는가와 별개다.
                     "judged_by": j["judged_by"],
                     "mails": [],
+                    "issues": [],
                 },
             )
+            # 원인 컬럼은 키에 붙인다. 같은 키의 메일이 여러 통이어도 (테이블, 컬럼) 은 한 번.
+            have = {(i["table"].upper(), i["column"].upper(), i["kind"]) for i in case["issues"]}
+            for i in j["issues"]:
+                if (i["table"].upper(), i["column"].upper(), i["kind"]) not in have:
+                    case["issues"].append(i)
+                    have.add((i["table"].upper(), i["column"].upper(), i["kind"]))
             case["mails"].append(
                 {
                     "subject": mail.subject,
@@ -594,15 +722,64 @@ def _query_cached(name: str, sql: str, key: str) -> list[dict[str, Any]]:
     return rows[:IFERR_MAX_ROWS]
 
 
+_MASTER_LOGICAL = ("id", "src_sys", "tar_sys", "src_table", "tar_table", "sch_day", "sch_h", "sch_m")
+
+
+def _master_col(name: str) -> str:
+    """논리 이름(id, tar_table …) → 조회 결과에서 찾을 컬럼 이름(대문자).
+
+    설정한 컬럼 이름이 있으면 그것, 없으면 논리 이름 그대로 — 파일 마스터는
+    컬럼 설정 없이도 논리 이름으로 쓸 수 있다.
+    """
+    return str(IFERR_MASTER_FIELDS.get(name) or name).upper()
+
+
+def master_file_rows() -> list[dict[str, Any]]:
+    """IFERR_MASTER_FILE(JSON 배열)의 행. 키는 _master_col 로 바꿔 DB 행과 같은 모양으로.
+
+    파일을 못 읽으면 예외 — 조용히 빈 목록을 주면 '마스터에 없음'으로 읽힌다.
+    """
+    import json
+
+    data = json.loads(Path(IFERR_MASTER_FILE).read_text(encoding="utf-8"))
+    if not isinstance(data, list):
+        raise ValueError("마스터 파일은 행(객체)의 배열이어야 한다")
+    return [{_master_col(str(k)) if str(k) in _MASTER_LOGICAL else str(k).upper(): v
+             for k, v in row.items()} for row in data if isinstance(row, dict)]
+
+
+def _lookup_file(cases: list[dict[str, Any]], warnings: list[str]) -> IfErrState:
+    """마스터를 파일에서 찾는다(데모·오프라인). DB 는 보지 않는다."""
+    try:
+        rows = master_file_rows()
+    except Exception as e:
+        for c in cases:
+            c["db"] = {"status": "unknown", "rule": "master-file-failed", "rows": {},
+                       "source": "file"}
+        warnings.append(f"마스터 파일을 읽지 못했다 — 확인 필요: {type(e).__name__}: {e}")
+        return {"cases": cases, "warnings": warnings}
+    id_col = _master_col("id")
+    for c in cases:
+        hit = [r for r in rows if str(r.get(id_col, "")).upper() == c["key"].upper()]
+        c["db"] = ({"status": "found", "rule": "rows-found", "rows": {"header": hit},
+                    "source": "file"} if hit else
+                   {"status": "missing", "rule": "no-rows", "rows": {"header": []},
+                    "source": "file"})
+    return {"cases": cases, "warnings": warnings}
+
+
 def lookup(state: IfErrState) -> IfErrState:
     """키별로 설정된 SQL 을 돌린다.
 
     SQL 이 설정되지 않았거나 DB 설정이 없으면 '확인 불가'로 남긴다.
-    '영향 없음'으로 처리하지 않는다.
+    '영향 없음'으로 처리하지 않는다. IFERR_MASTER_FILE 이 있으면 파일만 본다.
     """
     cases = state.get("cases") or []
     if not cases:
         return {}
+
+    if IFERR_MASTER_FILE.strip():
+        return _lookup_file(cases, list(state.get("warnings") or []))
 
     configured = {k: v for k, v in IFERR_SQL.items() if v.strip()}
     warnings = list(state.get("warnings") or [])
@@ -757,10 +934,7 @@ def _master_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     for row in rows:
         upper = {str(k).upper(): v for k, v in row.items()}
-        item = {
-            name: str(upper.get(str(col).upper(), "") or "")
-            for name, col in IFERR_MASTER_FIELDS.items()
-        }
+        item = {name: str(upper.get(_master_col(name), "") or "") for name in _MASTER_LOGICAL}
         if not any(item.values()):
             continue
 
@@ -918,6 +1092,7 @@ def run_iferr(
                     "judged_by": c.get("judged_by", ""),
                     "found_by": c.get("found_by", ""),
                     "flows": c.get("flows") or [],
+                    "issues": c.get("issues") or [],
                     "mail_count": len(c.get("mails") or []),
                 }
                 for c in cases[:10]
@@ -1091,21 +1266,31 @@ def table_interfaces(table: str) -> dict[str, Any]:
     if not _TABLE_NAME.match(name):
         return {**out, "rule": "bad-name",
                 "warnings": [f"'{name}' 은(는) 테이블 이름으로 볼 수 없다 — 확인 필요"]}
-    if not IFERR_TABLE_SQL.strip():
+    if IFERR_MASTER_FILE.strip():
+        # 데모·오프라인 — 파일 마스터를 거꾸로 거른다. 이름 비교는 아래 공통 부분이 한다.
+        try:
+            src, tar = _master_col("src_table"), _master_col("tar_table")
+            rows = [r for r in master_file_rows()
+                    if name in (bare_table_name(str(r.get(src) or ""))[0].upper(),
+                                bare_table_name(str(r.get(tar) or ""))[0].upper())]
+        except Exception as e:
+            return {**out, "rule": "master-file-failed",
+                    "warnings": [f"마스터 파일을 읽지 못했다 — 확인 필요: {type(e).__name__}: {e}"]}
+    elif not IFERR_TABLE_SQL.strip():
         return {**out, "rule": "sql-not-configured", "warnings": [
             "테이블로 인터페이스를 찾는 SQL 이 없다 — 확인 필요 (config_local.py 의 "
             "IFERR_MASTER_TABLE 과 IFERR_MASTER_FIELDS 의 src_table/tar_table, "
             "또는 IFERR_TABLE_SQL)"]}
-    if not oracle.is_configured():
+    elif not oracle.is_configured():
         return {**out, "rule": "db-not-configured",
                 "warnings": ["Oracle 설정이 비어 있다 — 확인 필요 (config.ORACLE_DSN)"]}
-
-    try:
-        rows = oracle.query(IFERR_TABLE_SQL, {"tname": name, "dotname": "." + name})
-    except Exception as e:
-        # 조회 실패를 빈 결과로 넘기면 '쓰는 인터페이스 없음'으로 읽힌다.
-        return {**out, "rule": "query-failed",
-                "warnings": [f"마스터 조회 실패 — 확인 필요: {type(e).__name__}: {e}"]}
+    else:
+        try:
+            rows = oracle.query(IFERR_TABLE_SQL, {"tname": name, "dotname": "." + name})
+        except Exception as e:
+            # 조회 실패를 빈 결과로 넘기면 '쓰는 인터페이스 없음'으로 읽힌다.
+            return {**out, "rule": "query-failed",
+                    "warnings": [f"마스터 조회 실패 — 확인 필요: {type(e).__name__}: {e}"]}
 
     warnings: list[str] = []
     if len(rows) > IFERR_MAX_ROWS:

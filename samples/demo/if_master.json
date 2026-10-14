@@ -1,0 +1,6 @@
+[
+  {"id": "IF_ORD_RECV", "src_sys": "SAP", "src_table": "ZORDER_OUT", "tar_sys": "ERP", "tar_table": "IF_ORDER_TMP", "sch_day": "*", "sch_h": "8", "sch_m": "30"},
+  {"id": "IF_ORD_RECV", "src_sys": "SAP", "src_table": "ZORDER_OUT", "tar_sys": "ERP", "tar_table": "IF_ORDER_TMP", "sch_day": "*", "sch_h": "12", "sch_m": "0"},
+  {"id": "IF_ORD_SEND", "src_sys": "ERP", "src_table": "ORD_HDR", "tar_sys": "SAP", "tar_table": "ZORD_IN", "sch_day": "*", "sch_h": "18", "sch_m": "0"},
+  {"id": "IF_STK_RECV", "src_sys": "WMS", "src_table": "STOCK_OUT", "tar_sys": "ERP", "tar_table": "IF_STOCK_TMP", "sch_day": "*", "sch_h": "6", "sch_m": "0"}
+]

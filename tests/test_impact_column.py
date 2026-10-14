@@ -179,28 +179,63 @@ def test_unknown_root_is_not_empty_result():
 # --------------------------------------------------------------------------
 
 
-def test_llm_judges_each_line_separately(monkeypatch: Any):
-    """같은 문장 안에서도 줄마다 답이 다르다 — INSERT 목록은 ORD_HDR, SELECT 는 IF_ORDER_TMP."""
-    fake = FakeLLM({"INSERT INTO ORD_HDR": ("column", "ORD_HDR"),
-                    "T.TOTAL_AMT": ("column", "IF_ORDER_TMP")})
+def test_rule_settled_lines_skip_llm(monkeypatch: Any):
+    """규칙으로 확정되는 줄은 LLM 에 보내지 않는다 — 실측에서 LLM 이 틀린 줄이 이쪽이었다."""
+    fake = FakeLLM()
     _use_llm(monkeypatch, fake)
     hits = _hits()
-    assert hits[("ord_join.sql", 4)]["verdict"] == "no"
-    assert hits[("ord_join.sql", 5)]["verdict"] == "yes"
+    settled = {
+        ("ord_join.sql", 4): ("no", "insert-list-other"),     # INSERT INTO ORD_HDR (.., TOTAL_AMT)
+        ("ord_join.sql", 5): ("yes", "alias"),                # T.TOTAL_AMT, T = IF_ORDER_TMP
+        ("ord_join.sql", 10): ("yes", "single-table"),        # UPDATE IF_ORDER_TMP SET TOTAL_AMT
+        ("ord_join.sql", 13): ("no", "alias-other"),          # B.TOTAL_AMT, B = ORD_HDR
+        ("ord_load.pc", 9): ("yes", "single-table"),          # SELECT TOTAL_AMT INTO :amt
+        ("OrdDao.java", 6): ("yes", "single-table"),          # 문자열 속 SQL
+    }
+    for k, (verdict, rule) in settled.items():
+        assert (hits[k]["verdict"], hits[k]["rule"], hits[k]["decided_by"]) == (verdict, rule, "rule"), k
     assert hits[("ord_join.sql", 5)]["usage"] == "select"
-    # 규칙(같은 문장 → 영향 있음)과 LLM 이 갈린 줄은 표시한다.
-    assert hits[("ord_join.sql", 4)]["conflict"] is True
-    # 주석은 LLM 에 보내지 않는다.
-    assert not any("ord_load.pc" in p and ">>    1|" in p for p in fake.prompts)
-    assert len(fake.prompts) == 10          # 12줄 중 주석 2줄 제외
+    assert hits[("ord_join.sql", 10)]["usage"] == "update"
+    # LLM 에는 테이블이 없는 문장의 줄만 간다(UPDATE ORD_HDR, C 변수 선언·대입, printf).
+    sent = sorted(int(next(x for x in p.splitlines() if x.startswith(">>"))[2:7]) for p in fake.prompts)
+    assert sent == [4, 14, 15, 20]
+
+
+def test_llm_decides_what_rules_cannot(monkeypatch: Any):
+    fake = FakeLLM({"SET TOTAL_AMT = TOTAL_AMT + 1": ("column", "ORD_HDR"),
+                    "long TOTAL_AMT": ("variable", ""),
+                    "TOTAL_AMT = amt": ("variable", "")})
+    _use_llm(monkeypatch, fake)
+    hits = _hits()
+    for k in (("ord_join.sql", 20), ("ord_load.pc", 4), ("ord_load.pc", 14)):
+        assert (hits[k]["verdict"], hits[k]["decided_by"]) == ("no", "llm"), k
+    # 답을 못 정한 줄은 '아니다'가 아니라 '확인 필요'다.
+    assert hits[("ord_load.pc", 15)]["verdict"] == "unknown"
+
+
+def test_host_variable_is_not_the_column(tmp_path: Path, monkeypatch: Any):
+    """대소문자를 가리지 않고 찾으므로 :ord_no 가 ORD_NO 로 걸린다. 변수 자리는 컬럼이 아니다."""
+    (tmp_path / "a.pc").write_text(
+        "EXEC SQL SELECT ORD_NO\n  INTO :ord_no\n  FROM IF_ORDER_TMP;\n"
+        "EXEC SQL DELETE FROM IF_ORDER_TMP WHERE ORD_NO = :ord_no;\n", encoding="utf-8")
+    (tmp_path / "b.xml").write_text(
+        '<update id="u">\n  UPDATE IF_ORDER_TMP SET STATUS = #{ordNo}\n</update>\n'
+        '<select id="s">\n  SELECT A FROM IF_ORDER_TMP WHERE ORD_NO = #{ORD_NO}\n</select>\n',
+        encoding="utf-8")
+    monkeypatch.setattr(usage_agent, "SOURCE_ROOTS", {"T": str(tmp_path)})
+    hits = {(h["program"], h["line"]): h
+            for h in column.run_column_impact("IF_ORDER_TMP", "ORD_NO", "T")["hits"]}
+    assert hits[("a.pc", 2)]["place"] == "host-var" and hits[("a.pc", 2)]["verdict"] == "no"
+    assert (hits[("a.pc", 4)]["verdict"], hits[("a.pc", 4)]["usage"]) == ("yes", "where")
+    assert (hits[("b.xml", 5)]["verdict"], hits[("b.xml", 5)]["usage"]) == ("yes", "where")
 
 
 def test_prompt_marks_target_line_inside_whole_statement(monkeypatch: Any):
     fake = FakeLLM()
     _use_llm(monkeypatch, fake)
     _hits()
-    p = next(p for p in fake.prompts if ">>    4|" in p and "ord_join.sql" in p)
-    assert "     5|   SELECT T.ORD_NO, T.TOTAL_AMT" in p and "FROM IF_ORDER_TMP T" in p
+    p = next(p for p in fake.prompts if ">>   20|" in p and "ord_join.sql" in p)
+    assert "     19|   UPDATE ORD_HDR" in p
 
 
 def test_llm_limit_keeps_rest_with_rule_verdict(monkeypatch: Any):
@@ -211,9 +246,7 @@ def test_llm_limit_keeps_rest_with_rule_verdict(monkeypatch: Any):
     assert len(fake.prompts) == 2
     assert len(r["hits"]) == 12                         # 버리지 않는다
     assert any("상한" in w for w in r["warnings"])
-    # 테이블과 같은 문장이 먼저 판정된다.
-    judged = [h for h in r["hits"] if h["decided_by"] == "llm"]
-    assert all(h["place"] == "same-stmt" for h in judged)
+    assert sum(1 for h in r["hits"] if h["decided_by"] == "llm") == 2
 
 
 def test_llm_down_is_unknown_and_not_cached(monkeypatch: Any):
@@ -222,8 +255,8 @@ def test_llm_down_is_unknown_and_not_cached(monkeypatch: Any):
     r = column.run_column_impact("IF_ORDER_TMP", "TOTAL_AMT", "EVAL")
     # 연달아 두 번 실패하면 나머지를 기다리지 않는다.
     assert len(fake.prompts) == 2
-    judged = [h for h in r["hits"] if h["place"] != "comment"]
-    assert all(h["verdict"] == "unknown" and h["decided_by"] == "llm-failed" for h in judged)
+    failed = [h for h in r["hits"] if h["decided_by"] == "llm-failed"]
+    assert len(failed) == 4 and all(h["verdict"] == "unknown" for h in failed)
     assert any("LLM 판정 실패" in w for w in r["warnings"])
     # 실패한 결과를 캐시하면 Ollama 가 살아나도 30분 동안 '확인 필요'만 나온다.
     column.run_column_impact("IF_ORDER_TMP", "TOTAL_AMT", "EVAL")

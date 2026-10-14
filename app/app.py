@@ -90,6 +90,28 @@ def get_agent() -> Any:
     return _agent
 
 
+def _reply_of(messages: list[Any]) -> str:
+    """이번 턴의 답. 모델이 툴을 부른 뒤 빈 답을 내면 툴 결과를 그대로 보여 준다.
+
+    qwen3.5:4b 는 CHAT_REASONING 을 비워 두면(모델 기본값) 사고 과정에만 토큰을 쓰고
+    본문 없이 끝나는 일이 있다(실측: 툴 결과 866자 뒤 빈 답). 그때 '(빈 응답)'만
+    보이면 조사 결과가 통째로 사라진다. 툴 결과는 이미 사람이 읽을 문장이다.
+    이전 턴의 답을 집어 오지 않도록 마지막 사용자 메시지 뒤만 본다.
+    """
+    last_human = max((i for i, m in enumerate(messages) if getattr(m, "type", "") == "human"),
+                     default=-1)
+    turn = messages[last_human + 1:]
+    for m in reversed(turn):
+        if getattr(m, "type", "") == "ai" and isinstance(m.content, str) and m.content.strip():
+            return m.content
+    tools = [m.content for m in turn
+             if getattr(m, "type", "") == "tool" and isinstance(m.content, str) and m.content.strip()]
+    if tools:
+        return ("(모델이 답을 비워 조사 결과를 그대로 보여 준다)\n\n"
+                + "\n\n".join(tools))
+    return ""
+
+
 def _turn_tool_calls(messages: list[Any]) -> list[dict[str, Any]]:
     """이번 턴에 호출된 툴만 추린다.
 
@@ -228,10 +250,7 @@ def api_chat_stream():
                     sink({"type": "status", "text": "결과 정리 중…"})
                 elif kind == "on_chain_end" and ev.get("name") == "LangGraph":
                     out = (ev.get("data") or {}).get("output") or {}
-                    for m in reversed(out.get("messages", []) or []):
-                        if getattr(m, "type", "") == "ai" and getattr(m, "content", ""):
-                            reply = m.content
-                            break
+                    reply = _reply_of(out.get("messages", []) or [])
             sink({
                 "type": "done",
                 "reply": reply,
@@ -289,11 +308,7 @@ def api_chat():
         return jsonify({"error": f"{type(e).__name__}: {e}"}), 502
 
     messages = result.get("messages", [])
-    reply = ""
-    for m in reversed(messages):
-        if getattr(m, "type", "") == "ai" and getattr(m, "content", ""):
-            reply = m.content
-            break
+    reply = _reply_of(messages)
 
     # 서버가 사람 확인을 요구해 거절한 건이 있으면 결과에 실어 보낸다.
     pending = _take_pending()

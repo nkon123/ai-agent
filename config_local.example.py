@@ -36,6 +36,9 @@ SOURCE_ROOTS = {
 # COLUMN_IMPACT_MAX_LLM = 40
 # COLUMN_IMPACT_MAX_HITS = 2000
 
+# 인터페이스 오류 확인이 메일의 원인 컬럼(ORA-12899 등)으로 이어서 조사할 컬럼 수 상한.
+# INCIDENT_MAX_IMPACTS = 2
+
 # --------------------------------------------------------------------------
 # Ollama
 # --------------------------------------------------------------------------
@@ -157,6 +160,10 @@ IFERR_MASTER_FIELDS = {
 #      ORDER BY IFID
 # 직접 쓰려면(바인드 :tname = 대문자 테이블 이름, :dotname = '.' + 이름):
 # IFERR_TABLE_SQL = "SELECT ... FROM {schema}IF_MST WHERE ..."
+
+# DB 가 없는 곳(발표·오프라인)에서는 마스터를 JSON 파일에서 읽을 수 있다. 채우면 DB 를
+# 보지 않는다. 가짜 값 예: samples/demo/if_master.json
+# IFERR_MASTER_FILE = r"samples/demo/if_master.json"
 
 # 자동 생성으로 부족하면 SQL 을 직접 쓴다. 이쪽이 우선한다.
 # 바인드 이름은 :if_key 고정, {schema} 는 ORACLE_SCHEMA 로 치환된다.

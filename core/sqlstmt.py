@@ -250,3 +250,86 @@ def classify(sql: str, table: str, lang: str = "sql") -> StmtInfo:
         rule="name-only" if hit else "no-hit",
         evidence=(flat[max(0, hit.start() - 30) : hit.end() + 30] if hit else ""),
     )
+
+
+# --------------------------------------------------------------------------
+# 컬럼 판정 보조 — 별칭과 절(clause)
+# --------------------------------------------------------------------------
+
+_NAME = r'(?:"?[A-Za-z_][\w$#]*"?\.){0,2}"?[A-Za-z_][\w$#]*"?'
+# 별칭 자리에 오지만 별칭이 아닌 말. 'FROM T WHERE' 의 WHERE 를 별칭으로 보면 안 된다.
+_NOT_ALIAS = {
+    "WHERE", "SET", "ON", "VALUES", "SELECT", "USING", "WHEN", "LEFT", "RIGHT", "INNER",
+    "OUTER", "FULL", "CROSS", "JOIN", "GROUP", "ORDER", "HAVING", "CONNECT", "START",
+    "UNION", "MINUS", "INTERSECT", "FOR", "WITH", "AND", "OR", "INTO", "FROM", "AS",
+    "NATURAL", "PARTITION", "SAMPLE", "RETURNING", "LOG", "MODEL",
+}
+# INTO 는 INSERT/MERGE 뒤일 때만 테이블이다. 'SELECT 컬럼 INTO v_amt' 의 v_amt 는 변수다.
+_REF_AFTER_KW = re.compile(
+    rf"(?i)\b(?:JOIN|UPDATE|USING|INSERT\s+INTO|MERGE\s+INTO)\s+({_NAME})"
+    r"(?:\s+(?:AS\s+)?([A-Za-z_][\w$#]*))?")
+_INSERT_TARGET = re.compile(rf"(?i)\bINSERT\s+INTO\s+({_NAME})")
+
+
+def insert_target(sql: str) -> str:
+    """INSERT INTO 의 대상 테이블(대문자, 스키마 뗌). 없으면 빈 값."""
+    m = _INSERT_TARGET.search(sql)
+    return bare_table_name(m.group(1))[0].strip('"').upper() if m else ""
+_FROM_LIST = re.compile(
+    r"(?is)\bFROM\b(.*?)(?=\bWHERE\b|\bGROUP\b|\bORDER\b|\bHAVING\b|\bCONNECT\b|\bSTART\b"
+    r"|\bUNION\b|\bMINUS\b|\bJOIN\b|\bLEFT\b|\bRIGHT\b|\bINNER\b|\bFULL\b|\bCROSS\b"
+    r"|\bNATURAL\b|\)|;|$)")
+_ONE_REF = re.compile(rf"(?i)\s*({_NAME})(?:\s+(?:AS\s+)?([A-Za-z_][\w$#]*))?\s*$")
+
+
+def table_refs(sql: str) -> dict[str, str]:
+    """문장에 나온 테이블과 별칭 → 테이블 이름(둘 다 대문자, 스키마는 뗀다).
+
+        SELECT B.TOTAL_AMT FROM IF_ORDER_TMP A JOIN ORD_HDR B ON ...
+        → {"IF_ORDER_TMP": "IF_ORDER_TMP", "A": "IF_ORDER_TMP",
+           "ORD_HDR": "ORD_HDR", "B": "ORD_HDR"}
+
+    FROM 목록(FROM A x, B y)과 JOIN / UPDATE / INTO / USING 뒤를 본다. 서브쿼리 안까지
+    따지지 않는다 — 못 찾으면 비어 있고, 호출부는 그때 판단을 미룬다.
+    'INTO :변수' 처럼 호스트 변수는 이름 모양이 아니라 잡히지 않는다.
+    """
+    refs: dict[str, str] = {}
+
+    def add(name: str, alias: str | None) -> None:
+        table = bare_table_name(name)[0].strip('"').upper()
+        if not table or table in _NOT_ALIAS:
+            return
+        refs.setdefault(table, table)
+        if alias and alias.upper() not in _NOT_ALIAS:
+            refs[alias.upper()] = table
+
+    for m in _FROM_LIST.finditer(sql):
+        for part in m.group(1).split(","):
+            r = _ONE_REF.match(part)
+            if r:
+                add(r.group(1), r.group(2))
+    for m in _REF_AFTER_KW.finditer(sql):
+        add(m.group(1), m.group(2))
+    return refs
+
+
+_CLAUSES = [
+    ("select", r"\bSELECT\b"), ("where", r"\bWHERE\b|\bHAVING\b"), ("update", r"\bSET\b"),
+    ("join", r"\bON\b"), ("order_group", r"\bORDER\s+BY\b|\bGROUP\s+BY\b"),
+    ("insert", r"\bVALUES\b|\bINSERT\s+INTO\s+" + _NAME + r"\s*\("), ("from", r"\bFROM\b"),
+    ("into", r"\bINTO\b"),
+]
+_CLAUSE_RE = re.compile("|".join(f"(?P<{k}>{p})" for k, p in _CLAUSES), re.IGNORECASE)
+
+
+def clause_at(sql: str, pos: int) -> str:
+    """sql[pos] 가 속한 절. select | where | update | join | order_group | insert | other.
+
+    pos 앞에서 마지막으로 나온 절 키워드로 정한다. 'SELECT 컬럼 INTO :v' 의 INTO 뒤는
+    값을 받는 변수 자리라 other 다. 컬럼이 어디에 쓰였는지(조회·조건·수정)를 LLM 에
+    묻지 않고 정한다 — 규칙으로 정확히 나오는 것을 모델에 맡길 이유가 없다.
+    """
+    last = "other"
+    for m in _CLAUSE_RE.finditer(sql[:pos]):
+        last = m.lastgroup or "other"
+    return {"from": "other", "into": "other"}.get(last, last)

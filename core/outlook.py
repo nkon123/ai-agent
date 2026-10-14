@@ -72,6 +72,12 @@ def mask_address(addr: str) -> str:
     return f"{local[:2]}***@{domain}"
 
 
+def _now() -> datetime:
+    """'최근 N시간'의 기준 시각. 시험은 이걸 샘플 메일 날짜로 고정한다 —
+    고정 날짜 샘플을 실제 시계로 거르면 날이 지날수록 0통이 된다(실제로 깨졌다)."""
+    return datetime.now()
+
+
 def read_mails(
     folder: str | None = None,
     since_hours: int | None = None,
@@ -87,7 +93,7 @@ def read_mails(
     folder = folder if folder is not None else MAIL_FOLDER
     since_hours = since_hours if since_hours is not None else MAIL_LOOKBACK_HOURS
     max_count = max_count or MAIL_MAX_COUNT
-    since = datetime.now() - timedelta(hours=since_hours)
+    since = _now() - timedelta(hours=since_hours)
 
     if backend == "com":
         return _read_com(folder, since, max_count)

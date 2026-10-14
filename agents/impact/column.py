@@ -45,7 +45,15 @@ from config import (  # noqa: E402
 )
 from core.cache import TTLCache  # noqa: E402
 from core.progress import notify  # noqa: E402
-from core.sqlstmt import bare_table_name, classify, masks_strings, statement_at  # noqa: E402
+from core.sqlstmt import (  # noqa: E402
+    bare_table_name,
+    clause_at,
+    classify,
+    insert_target,
+    masks_strings,
+    statement_at,
+    table_refs,
+)
 from core.text import ident_pattern, read_text_with_encoding, strip_comments  # noqa: E402
 
 Detail = Literal["full", "summary"]
@@ -58,8 +66,9 @@ USAGE_LABEL = {
 # 규칙 1차 분류. 그리드의 '위치' 칸에 그대로 나간다.
 PLACE_LABEL = {
     "comment": "주석", "string": "문자열", "same-stmt": "테이블과 같은 문장",
-    "other-code": "다른 코드",
+    "other-code": "다른 코드", "host-var": "호스트 변수",
 }
+_XML_TAG = re.compile(r"<[^>]*>")
 
 
 def split_names(table: str, column: str) -> tuple[str, str, str]:
@@ -96,6 +105,75 @@ def _place(nocomment_line: str, masked_line: str, pat: re.Pattern[str]) -> str:
     if pat.search(nocomment_line):
         return "string"
     return "comment"
+
+
+# 값을 받거나 넘기는 자리: Pro*C·PL/SQL :ord_no, MyBatis #{ordNo} / ${x}.
+# :NEW.컬럼 / :OLD.컬럼(트리거)은 그 테이블의 컬럼이라 빼지 않는다.
+_HOST_VAR = re.compile(r"(?<![\w.]):(?!(?:NEW|OLD)\.)[A-Za-z_][\w$#]*|[#$]\{[^}]*\}", re.IGNORECASE)
+_QUALIFIED_BEFORE = re.compile(r'([A-Za-z_][\w$#]*)"?\s*\.\s*"?$')
+
+
+def _blank(text: str, pat: re.Pattern[str]) -> str:
+    """매치를 같은 길이의 공백으로 — 줄·위치가 원문과 맞아야 줄 번호를 그대로 쓴다."""
+    return pat.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), text)
+
+
+def settle(body: str, line_idx: int, table: str, col_pat: re.Pattern[str]) -> dict[str, str] | None:
+    """규칙으로 확정되는 줄은 여기서 정한다. 못 정하면 None(LLM 이 본다).
+
+    body 는 주석·호스트 변수를 지운 문장, line_idx 는 문장 안 줄 위치다.
+        T.ORD_NO / A.ORD_NO   별칭이 가리키는 테이블로 정한다(FROM/JOIN 에서 찾는다)
+        INSERT INTO X (.., C) 괄호 안 목록은 X 의 컬럼이다
+        테이블이 하나뿐인 문장  그 테이블의 컬럼이다
+    실측에서 LLM 이 틀린 줄이 전부 여기 해당했다(별칭 T, 'B.C = A.C' 가 한 줄).
+    """
+    lines = body.splitlines()
+    if not 0 <= line_idx < len(lines):
+        return None
+    line = lines[line_idx]
+    occurrences = list(col_pat.finditer(line))
+    if not occurrences:
+        return None
+    refs = table_refs(body)
+    target = insert_target(body)
+    offset = sum(len(x) + 1 for x in lines[:line_idx])
+    owners: list[tuple[str | None, str, str, str]] = []     # (테이블, 절, 근거 조각, 규칙)
+    for m in occurrences:
+        clause = clause_at(body, offset + m.start())
+        q = _QUALIFIED_BEFORE.search(line[: m.start()])
+        if q:
+            owners.append((refs.get(q.group(1).upper()), clause, f"{q.group(1)}.{m.group(0)}", "alias"))
+        elif clause == "insert" and target:
+            owners.append((target, clause, m.group(0), "insert-list"))
+        elif refs and set(refs.values()) == {table}:
+            owners.append((table, clause, m.group(0), "single-table"))
+        elif target and refs and set(refs.values()) - {target} == {table}:
+            # INSERT INTO ORD_HDR (..) SELECT ORD_NO FROM IF_ORDER_TMP — 목록 밖의 컬럼은
+            # 읽어 오는 쪽(대상 테이블을 뺀 나머지 하나)의 것이다.
+            owners.append((table, clause, m.group(0), "single-source"))
+        else:
+            owners.append((None, clause, m.group(0), ""))
+
+    def why(owner: str, piece: str, rule: str) -> str:
+        if rule == "alias":
+            alias = piece.split(".")[0].upper()
+            return (f"{piece} — {alias} 는 {owner}" if alias != owner else f"{piece} — 테이블 이름으로 지정")
+        if rule == "insert-list":
+            return f"INSERT INTO {owner} 의 컬럼 목록이다"
+        if rule == "single-source":
+            return f"INSERT 대상을 빼면 읽어 오는 테이블이 {owner} 하나뿐이다"
+        return f"문장에 나오는 테이블이 {owner} 하나뿐이다"
+
+    mine = [o for o in owners if o[0] == table]
+    if mine:
+        owner, clause, piece, rule = mine[0]
+        usage = clause if clause in USAGE_LABEL and clause != "none" else "other"
+        return {"verdict": "yes", "usage": usage, "rule": rule, "reason": why(owner, piece, rule)}
+    if all(o[0] for o in owners):
+        owner, _clause, piece, rule = owners[0]
+        return {"verdict": "no", "usage": "none", "rule": f"{rule}-other",
+                "reason": why(owner, piece, rule) + f" — {table} 의 컬럼이 아니다"}
+    return None
 
 
 def find_hits(table: str, column: str, roots: list[tuple[str, str]]) -> dict[str, Any]:
@@ -152,15 +230,36 @@ def find_hits(table: str, column: str, roots: list[tuple[str, str]]) -> dict[str
             }
             if where == "comment":
                 hit.update(place="comment", rule_verdict="no", rule="comment-only")
+            elif where == "code" and not col_pat.search(_blank(mk, _HOST_VAR)):
+                # INTO :ord_no / #{ordNo} — 값을 받는 변수 자리다. 대소문자를 가리지 않고
+                # 찾으므로 :ord_no 가 ORD_NO 로 걸린다(실측에서 LLM 이 '영향 있음'으로 봤다).
+                hit.update(place="host-var", rule_verdict="no", rule="host-variable")
             else:
                 stmt = statement_at(text, no, lang)
                 try:
                     body = strip_comments(stmt.sql, lang, mask_strings=masks_strings(lang))
                 except ValueError:
                     body = stmt.sql
+                if lang == "xml":
+                    body = _blank(body, _XML_TAG)      # <select id=".."> 를 SQL 로 읽지 않게
+                body = _blank(body, _HOST_VAR)
                 same = bool(tab_pat.search(body))
                 hit.update(start_line=stmt.start_line, end_line=stmt.end_line, sql=stmt.sql,
                            complete=stmt.complete)
+                idx = no - stmt.start_line
+                first = col_pat.search((body.splitlines() or [""])[idx]) \
+                    if 0 <= idx < len(body.splitlines()) else None
+                if first:
+                    pos = sum(len(x) + 1 for x in body.splitlines()[:idx]) + first.start()
+                    hit["clause"] = clause_at(body, pos)
+                if where == "code" and same and stmt.complete:
+                    s = settle(body, idx, table, col_pat)
+                    if s:
+                        info = classify(stmt.sql, table, lang)
+                        hit.update(place="same-stmt", stmt_kind=info.kind, table_role=info.role,
+                                   rule_verdict=s["verdict"], rule=s["rule"], settled=s)
+                        hits.append(hit)
+                        continue
                 if where == "string":
                     # Pro*C·PL/SQL 의 문자열 안 — 로그 문구일 수도, 동적 SQL 일 수도 있다.
                     hit.update(place="string", rule_verdict="unknown", rule="in-string")
@@ -229,6 +328,14 @@ def _prompt(table: str, column: str, h: dict[str, Any]) -> str:
     )
 
 
+def _usage(h: dict[str, Any], llm_usage: str) -> str:
+    """쓰인 자리. SQL 절로 정한 것이 있으면 그것, 없으면 LLM 답."""
+    clause = h.get("clause") or ""
+    if clause in USAGE_LABEL and clause not in ("none", "other"):
+        return clause
+    return llm_usage if llm_usage in USAGE_LABEL and llm_usage != "none" else "other"
+
+
 def verdict_of(kind: str, owner: str, table: str) -> str:
     """LLM 의 답(무엇인가, 어느 테이블인가)을 판정으로 바꾼다. 비교는 코드가 한다."""
     if kind in ("variable", "text"):
@@ -242,23 +349,33 @@ def verdict_of(kind: str, owner: str, table: str) -> str:
 
 
 def judge(table: str, column: str, hits: list[dict[str, Any]]) -> list[str]:
-    """규칙으로 끝나지 않은 줄을 문장 단위로 묶어 LLM 이 판정한다. 경고 목록을 돌려준다.
+    """규칙으로 끝나지 않은 줄을 줄마다 LLM 이 판정한다. 경고 목록을 돌려준다.
 
-    LLM 판정이 있으면 그것이 최종이다(규칙 추정은 그리드에 함께 남긴다).
-    같은 이름의 컬럼이 여러 테이블에 흔해 규칙만으로는 가를 수 없기 때문이다.
+    규칙으로 확정된 줄(주석·호스트 변수·별칭·INSERT 목록·테이블 하나뿐인 문장)은
+    LLM 에 보내지 않는다. 나머지는 LLM 판정이 최종이다(규칙 추정은 그리드에 함께
+    남긴다) — 같은 이름의 컬럼이 여러 테이블에 흔해 규칙만으로는 가를 수 없다.
+    쓰인 자리(조회·조건·수정…)는 SQL 절로 정하고, 절을 모를 때만 LLM 답을 쓴다.
     """
     for h in hits:
+        s = h.get("settled")
+        if s:
+            h.update(verdict=s["verdict"], usage=s["usage"], decided_by="rule", reason=s["reason"])
+            continue
         h.update(verdict=h["rule_verdict"], usage="none", decided_by="rule",
                  reason={"comment-only": "주석 안에만 나온다",
+                         "host-variable": "값을 받는 변수 자리(:변수, #{변수})다 — 컬럼이 아니다",
                          "same-statement": "테이블과 같은 SQL 문장에 나온다(LLM 미확인)",
                          "partial-statement": "문장 끝을 찾지 못한 조각이다",
                          "in-string": "문자열 안에 있다(LLM 미확인)",
                          "other-statement": "테이블이 없는 문장이다(LLM 미확인)"}[h["rule"]])
+        if h["verdict"] == "yes":
+            h["usage"] = _usage(h, "")
     if not USE_LLM:
         return []
 
     # 테이블과 같은 문장이 먼저다 — 상한에 걸려도 영향이 큰 쪽은 판정된다.
-    order = sorted((h for h in hits if h["place"] != "comment"),
+    order = sorted((h for h in hits
+                    if h["place"] not in ("comment", "host-var") and not h.get("settled")),
                    key=lambda h: ({"same-stmt": 0, "string": 1}.get(h["place"], 2),
                                   h["file"], h["line"]))
     targets = order[:COLUMN_IMPACT_MAX_LLM]
@@ -303,7 +420,7 @@ def judge(table: str, column: str, hits: list[dict[str, Any]]) -> list[str]:
         if note and note not in warnings:
             warnings.append(note)
         verdict = verdict_of(v.kind, v.owner_table, table)
-        h.update(verdict=verdict, usage=v.usage if verdict == "yes" else "none",
+        h.update(verdict=verdict, usage=_usage(h, v.usage) if verdict == "yes" else "none",
                  decided_by="llm", reason=v.reason.strip()[:200],
                  llm_kind=v.kind, llm_owner=v.owner_table.strip(),
                  conflict=h["rule_verdict"] != "unknown" and h["rule_verdict"] != verdict)

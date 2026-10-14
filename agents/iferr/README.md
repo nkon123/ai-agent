@@ -62,6 +62,29 @@ IF_ORD: found (근거 rows-found)
 "X 테이블은 어떤 IFID 랑 연결돼?" 는 이 툴로, 영향도·어디서 쓰여·IFID→테이블·변수
 사용처 질문은 원래 툴로 갔다(18/18).
 
+## 메일의 원인 컬럼 — `extract_issues`
+
+오류 메일 본문에서 **어느 테이블의 어느 컬럼이 문제인지**도 뽑아 케이스의 `issues` 에 붙인다.
+`check_interface_errors` 는 이걸로 컬럼 영향도까지 이어서 조사한다(`agents/incident`).
+
+- `ORA-12899`(길이 초과)·`ORA-01400`(NULL)은 영문·한글 메시지 모두 규칙으로 뽑는다
+  (스키마·테이블·컬럼, 실제/최대 길이).
+- 컬럼 이름이 없는 `ORA-01438`·`ORA-01401` 은 '컬럼 미상'으로 남긴다.
+- 형식 없는 글은 메일 판정 LLM 이 `cause_columns` 로 함께 낸다. 메일에 적힌 이름만 쓴다.
+- 오류 메시지가 테이블·컬럼이라고 밝힌 이름은 **인터페이스 키에서 뺀다** — `IF_ORDER_TMP`
+  가 `if-prefix` 규칙에 키로 잡혔다(실측).
+
+## 파일 마스터 — DB 가 없는 데모·오프라인
+
+`IFERR_MASTER_FILE` 에 JSON 배열을 주면 마스터 조회(IFID→테이블, 테이블→IFID)가 DB 대신
+이 파일을 본다. 비워 두면(기본) 쓰지 않는다. 답에 `마스터: 파일` 이 찍힌다. 파일을 못 읽으면
+'없음'이 아니라 '확인 불가'다. 행 키는 `IFERR_MASTER_FIELDS` 의 논리 이름이다.
+
+```json
+[{"id": "IF_ORD_RECV", "src_sys": "SAP", "src_table": "ZORDER_OUT",
+  "tar_sys": "ERP", "tar_table": "IF_ORDER_TMP", "sch_day": "*", "sch_h": "8", "sch_m": "30"}]
+```
+
 ## 오류 메일 판정 — LLM 이 읽고, 키워드가 받친다
 
 기본(`IFERR_MAIL_JUDGE = "llm"`)은 LLM 이 메일마다 **오류 알림인가**와
@@ -434,7 +457,7 @@ SQL 이 비어 있으면 키 추출까지만 하고 **"확인 불가"** 로 남�
 
 | 툴 | 등급 | 메일 | DB | 무엇 |
 |---|---|---|---|---|
-| `check_interface_errors(period, key)` | combo | ○ | ○ | 전체를 한 번에 |
+| `check_interface_errors(period, key)` | combo | ○ | ○ | 전체를 한 번에 + 원인 컬럼 영향도(`agents/incident`), [표로 보기] |
 | `find_interface_tables(key)` | combo | ✕ | ○ | IFID → 출발·도착 테이블 |
 | `find_table_interfaces(table)` | combo | ✕ | ○ | 테이블 → 그 테이블을 쓰는 인터페이스 |
 | `list_error_mails(period)` | step | ○ | ✕ | 메일이 오긴 왔는지 |
@@ -448,6 +471,7 @@ SQL 이 비어 있으면 키 추출까지만 하고 **"확인 불가"** 로 남�
 | 리소스 | 무엇 |
 |---|---|
 | `iferr://detail/{key}` | `detail="full"` — 메일 목록 + 조회 행 전부 |
+| `iferr://impact/{period}/{key}` | 오류 케이스별 원인 컬럼 영향도 그리드 (`-` 는 기본값) |
 | `iferr://table/{table}` | 테이블을 쓰는 인터페이스 전부 (챗봇 답은 15개까지만) |
 
 annotations: `readOnly=true`, `destructive=false`
