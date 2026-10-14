@@ -268,7 +268,7 @@
 <p style="font-size:72px;font-weight:800;line-height:1.1;background:linear-gradient(90deg, #0071E3 0%, #A259FF 100%);background-clip:text;-webkit-text-fill-color:transparent">01</p>
 <h3 style="font-size:34px;font-weight:700;color:#1D1D1F">한마디</h3>
 <p style="font-size:24px;line-height:1.45;color:#1D1D1F;background:#ECECF1;border-radius:16px;padding:14px 18px">“오늘 인터페이스 오류 확인해줘”</p>
-<p style="font-size:24px;line-height:1.5;color:#515154">오류 2건, 원인 IF_ORDER_TMP.ORD_NO 길이 초과(25 &gt; 20), 영향 있는 곳까지</p>
+<p style="font-size:24px;line-height:1.5;color:#515154">오류 2건 — 주문은 원인 컬럼(길이 초과 25 &gt; 20), 재고는 도착 테이블로 영향도까지</p>
 </div>
 <div style="flex:1;display:flex;flex-direction:column;gap:18px;background:#FBFBFD;border-radius:28px;padding:40px 36px;box-shadow:0 2px 20px rgba(0,0,0,0.06)">
 <p style="font-size:72px;font-weight:800;line-height:1.1;background:linear-gradient(90deg, #0071E3 0%, #A259FF 100%);background-clip:text;-webkit-text-fill-color:transparent">02</p>
@@ -291,19 +291,19 @@
 </div>
 <aside>시연은 네 장면입니다. 첫째, 한마디로 오늘 오류를 확인합니다. 둘째, 표로 보기에서 전체 목록과 근거를 봅니다. 셋째, 의심 줄을 더블클릭해 소스를 봅니다. 넷째, 특정 메일 제목으로 그 메일만 조사합니다. 시간은 [__분] 으로 잡았습니다.</aside>
 </section>
-<section class="slide" id="demo-chat" data-transition="fade" style="background:#F5F5F7;color:#1D1D1F;font-family:'Noto Sans KR', Arial, sans-serif;padding:128px;display:flex;flex-direction:row;align-items:center;gap:56px">
-<div style="width:560px;display:flex;flex-direction:column;gap:28px">
+<section class="slide" id="demo-chat" data-transition="fade" style="background:#F5F5F7;color:#1D1D1F;font-family:'Noto Sans KR', Arial, sans-serif;padding:128px;display:flex;flex-direction:row;align-items:center;justify-content:center;gap:72px">
+<div style="width:640px;display:flex;flex-direction:column;gap:28px">
 <p style="font-size:28px;font-weight:600;color:#0071E3">시연 01 · 한마디</p>
 <h2 style="font-size:56px;font-weight:700;line-height:1.2;letter-spacing:-1px;color:#1D1D1F">원인부터 영향까지,<br>한 화면에.</h2>
 <ul style="font-size:26px;line-height:1.55;color:#515154">
 <li>오류마다 원인과 메일 원문 줄</li>
-<li>영향 있는 곳은 위치와 코드로</li>
-<li>원인 컬럼이 없는 오류도 그 사실을 적음</li>
+<li>원인 컬럼이 있으면 그 컬럼을 쓰는 줄마다 영향 판정</li>
+<li>원인 컬럼이 없으면 도착 테이블을 읽는 곳·쓰는 곳으로</li>
 <li>같은 질문엔 늘 같은 모양의 답</li>
 </ul>
 </div>
-<img src="img/demo-chat.png" alt="챗봇에 '오늘 인터페이스 오류 확인해줘'라고 물은 답 화면: 오류 2건, 원인 IF_ORDER_TMP.ORD_NO 길이 초과, 영향 있는 곳 목록" style="width:1048px;height:806px;object-fit:contain;border-radius:24px;background:#FFFFFF;box-shadow:0 20px 60px rgba(0,0,0,0.12)">
-<aside>실제 답 화면입니다. 오류마다 굵은 제목 아래에 원인, 메일의 오류 원문, 영향도 건수, 영향 있는 곳이 나옵니다. 재고 오류처럼 원인 컬럼이 메일에 없으면 그 사실을 적습니다. 결과를 모델이 다시 쓰지 않아 같은 질문에는 늘 같은 모양으로 나옵니다.</aside>
+<img src="img/demo-chat.png" alt="챗봇에 '오늘 인터페이스 오류 확인해줘'라고 물은 답 화면: 주문 오류는 원인 IF_ORDER_TMP.ORD_NO 길이 초과와 영향 있는 곳, 재고 오류는 도착 테이블 IF_STOCK_TMP 를 읽는 곳과 쓰는 곳" style="width:838px;height:806px;object-fit:contain;border-radius:24px;background:#FFFFFF;box-shadow:0 20px 60px rgba(0,0,0,0.12)">
+<aside>실제 답 화면입니다. 오류 두 건이 같은 모양으로 나옵니다. 주문 오류는 메일에 적힌 원인 컬럼, 길이 초과로 그 컬럼을 쓰는 줄마다 영향을 판정했습니다. 재고 오류는 메일에 컬럼 정보가 없는 timeout 이라, 도착 테이블 IF_STOCK_TMP 를 읽는 곳은 영향 있음, 쓰는 곳은 확인 필요로 나눴습니다. 결과를 모델이 다시 쓰지 않아 같은 질문에는 늘 같은 모양으로 나옵니다.</aside>
 </section>
 <section class="slide" id="demo-source" data-transition="fade" style="background:#F5F5F7;color:#1D1D1F;font-family:'Noto Sans KR', Arial, sans-serif;padding:128px;display:flex;flex-direction:row;align-items:center;gap:56px">
 <div style="width:560px;display:flex;flex-direction:column;gap:28px">
