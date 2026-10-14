@@ -786,8 +786,9 @@ fetch("/api/tools").then(r => r.json()).then(d => {
   $("examples").textContent = "(불러오지 못함)";
 }).finally(() => {
   load();
-  const recent = chats.find(c => c.messages && c.messages.length);
-  if (recent) openChat(recent.id); else newChat();
+  // 들어오면 늘 새 대화(첫 화면)부터. 지난 대화는 왼쪽 목록에서 연다 — 최근 대화가 먼저 뜨면
+  // 새 질문이 지난 대화에 이어 붙고, 발표·시연 때마다 지난 화면부터 보였다(사용자 요청).
+  newChat();
 });
 
 // ── 복사 ────────────────────────────────────────────────────────────────
