@@ -78,6 +78,8 @@ MAIL_BACKEND = "com"
 #     python agents\iferr\agent.py --folders
 MAIL_FOLDER = r"받은 편지함\인터페이스"
 MAIL_LOOKBACK_HOURS = 24
+# 메일 제목을 지정해 확인할 때 기간을 말하지 않으면 볼 시간(기본 7일)
+# MAIL_SUBJECT_LOOKBACK_HOURS = 168
 
 # 메일 제목에서 오류 메일을 고르는 키워드
 # 항목이 하나여도 쉼표를 반드시 붙일 것. ("오류") 는 튜플이 아니라

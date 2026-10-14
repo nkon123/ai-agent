@@ -16,7 +16,13 @@
 ```bash
 python agents/incident/agent.py --period 오늘
 python agents/incident/agent.py --key IF_ORD_RECV      # 메일 없이 IFID 만 (원인 컬럼은 메일에서 오므로 없음)
+python agents/incident/agent.py --subject "[연계오류] 주문 수신"   # 제목으로 메일 한 통 (기본 최근 7일)
 ```
+
+챗봇에서는 `"[연계오류] 주문 수신 인터페이스 처리 실패" 메일 오류 확인해줘` 처럼 메일 한 통을
+집어 물을 수 있다. 답은 어느 메일(제목·수신 시각)을 봤는지부터 밝힌다. 규칙은
+`agents/iferr/README.md` 의 '메일 한 통 지정'. 실측: 데모 메일로 2.9초, 17줄 판정은 기간으로
+물었을 때와 같다.
 
 ## 원인 컬럼과 테이블
 

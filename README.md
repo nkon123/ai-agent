@@ -161,7 +161,7 @@ tests/              core/ + MCP 회귀 테스트
 
 | 툴 | 등급 | 무엇 |
 |---|---|---|
-| `check_interface_errors` | combo | 오류 메일 → 키 → 마스터 테이블 → 메일의 원인 컬럼 → 컬럼 영향도까지 한 번에 ([표로 보기]) |
+| `check_interface_errors` | combo | 오류 메일 → 키 → 마스터 테이블 → 메일의 원인 컬럼 → 컬럼 영향도까지 한 번에 ([표로 보기]). 메일 제목을 말하면 그 메일 한 통만 |
 | `find_interface_tables` | combo | IFID 하나 → 참조 테이블(출발·도착)·경로 (메일 안 읽음) |
 | `find_table_interfaces` | combo | 테이블 하나 → 그 테이블을 출발·도착으로 쓰는 인터페이스 (메일 안 읽음) |
 | `analyze_table_impact` | combo | 테이블을 쓰는 SQL 문장 찾기 |
@@ -227,6 +227,8 @@ samples\demo\run_demo.bat
 가짜 메일(오늘 날짜로 그때 만든다)·가짜 인터페이스 마스터·샘플 소스로 챗봇을 띄운다.
 `config_local.py` 는 건드리지 않는다(이 창의 환경변수만 쓴다). Ollama 주소가 다르면
 `set OLLAMA_HOST=...` 후 실행. 흐름과 실측은 `agents/incident/README.md`.
+
+메일 한 통을 집어 물을 수도 있다: `"[연계오류] 주문 수신 인터페이스 처리 실패" 메일 오류 확인해줘`.
 
 ## 화면 구성
 

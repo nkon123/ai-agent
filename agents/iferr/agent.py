@@ -10,6 +10,7 @@
     python agents/iferr/agent.py                       # 최근 24시간
     python agents/iferr/agent.py --hours 72
     python agents/iferr/agent.py --key IF_ORD_SEND     # 키를 직접 지정
+    python agents/iferr/agent.py --subject "[IF 오류] 주문"   # 제목으로 메일 한 통 지정
     MAIL_BACKEND=eml python agents/iferr/agent.py      # 파일로 테스트
 
 설계 원칙 (여기서 특히 중요하다):
@@ -50,6 +51,7 @@ from config import (  # noqa: E402
     JUDGE_MODEL,
     MAIL_LOOKBACK_HOURS,
     MAIL_SUBJECT_KEYWORDS,
+    MAIL_SUBJECT_LOOKBACK_HOURS,
     MAIL_SUBJECT_MATCH,
     MAIL_SUBJECT_STRIP_PREFIXES,
     USE_LLM,
@@ -72,6 +74,7 @@ _COMPILED: list[tuple[str, re.Pattern[str]]] = [
 class IfErrState(TypedDict, total=False):
     hours: int
     only_key: str
+    subject: str
     mails: list[Mail]
     mail_count: int
     cases: list[dict[str, Any]]
@@ -371,6 +374,33 @@ def parse_period(text: str, default_hours: int) -> tuple[int, str, str]:
     )
 
 
+# 사용자가 말한 제목을 감싼 따옴표. 제목 자체의 [IF 오류] 같은 대괄호는 남긴다.
+_SUBJECT_QUOTES = "\"'`“”‘’「」『』"
+
+
+def subject_key(text: str) -> str:
+    """제목 비교용. 대소문자·공백을 무시한다 — 사람은 "[IF 오류]" 를 "[IF오류]" 로도 쓴다."""
+    return re.sub(r"\s+", "", (text or "").strip().strip(_SUBJECT_QUOTES)).casefold()
+
+
+def pick_by_subject(mails: list[Mail], subject: str) -> tuple[list[Mail], list[str]]:
+    """제목에 subject 가 들어간 메일 중 가장 최근 한 통. (고른 메일, 경고)
+
+    '이 메일' 을 물었으니 한 통만 본다. 같은 제목이 여러 통이면(매일 오는 알림) 가장
+    최근 것을 보고 그 사실을 알린다 — 어느 메일을 봤는지 모르면 답을 믿을 수 없다.
+    """
+    want = subject_key(subject)
+    hits = [m for m in mails if want and want in subject_key(m.subject)]
+    if len(hits) <= 1:
+        return hits, []
+    hits.sort(key=lambda m: m.received or datetime.min, reverse=True)
+    top = hits[0]
+    when = top.received.strftime("%m-%d %H:%M") if top.received else "시각 미상"
+    return [top], [f"제목에 '{subject.strip()}' 이(가) 들어간 메일이 {len(hits)}통이라 가장 최근 "
+                   f"1통({when} '{top.subject[:60]}')만 확인했다 — 다른 메일이면 제목을 더 "
+                   "자세히 말할 것"]
+
+
 def is_error_mail(mail: Mail) -> bool:
     """제목 키워드로 오류 메일을 고른다. 판정 기준을 한곳에 둔다."""
     return bool(matched_keyword(mail))
@@ -485,7 +515,9 @@ def verify_llm_keys(text: str, ids: list[str]) -> tuple[list[dict[str, str]], li
     return kept, rejected
 
 
-def judge_mails(mails: list[Mail]) -> tuple[list[dict[str, Any]], list[str]]:
+def judge_mails(
+    mails: list[Mail], force_error: bool = False
+) -> tuple[list[dict[str, Any]], list[str]]:
     """메일마다 오류 여부와 키를 정한다. 통합 툴과 단계 툴이 같이 쓴다.
 
     돌려주는 판정 하나:
@@ -494,6 +526,9 @@ def judge_mails(mails: list[Mail]) -> tuple[list[dict[str, Any]], list[str]]:
         keys        [{key, rule, evidence}]  — rule 은 정규식 규칙명 또는 llm
         llm         {is_error, reason} | None (LLM 을 안 썼거나 실패)
         conflict    키워드와 LLM 이 다르게 봤다 — 사람이 볼 것
+
+    force_error 는 사용자가 제목으로 집어 '이 메일 오류 확인해줘' 한 경우다. 키워드·LLM 이
+    오류가 아니라고 봐도 키와 원인 컬럼을 뽑는다(judged_by=user) — 사람이 오류라고 했다.
     """
     use_llm = llm_judge_enabled()
     warnings: list[str] = []
@@ -537,6 +572,11 @@ def judge_mails(mails: list[Mail]) -> tuple[list[dict[str, Any]], list[str]]:
         else:
             judged_by = "rule"          # 키워드만 걸렸거나 둘 다 아니다
         conflict = bool(verdict) and bool(hit) and not llm_error
+        if force_error and not is_error:
+            is_error, judged_by = True, "user"
+            warnings.append(f"'{mail.subject[:60]}' 은(는) 제목 키워드"
+                            + ("·LLM" if verdict else "") + " 로는 오류 메일이 아니었다 — "
+                            "지정한 메일이라 오류로 보고 조사했다")
 
         keys: list[dict[str, str]] = []
         issues: list[dict[str, str]] = []
@@ -625,6 +665,18 @@ def collect(state: IfErrState) -> IfErrState:
             "rule": "mail-unavailable",
             "warnings": [f"메일을 읽지 못했다 — 확인 필요: {e}"],
         }
+    subject = (state.get("subject") or "").strip()
+    if subject:
+        picked, warnings = pick_by_subject(mails, subject)
+        if not picked:
+            # '그 메일에 오류 없음' 이 아니다. 메일을 못 찾은 것이다.
+            return {
+                "mails": [], "mail_count": 0, "decided_by": "rule", "rule": "subject-not-found",
+                "warnings": [f"제목에 '{subject}' 이(가) 들어간 메일을 최근 {state.get('hours')}시간 "
+                             f"메일 {len(mails)}통에서 찾지 못했다 — 확인 필요 "
+                             "(제목 철자나 기간을 확인할 것)"],
+            }
+        return {"mails": picked, "mail_count": len(picked), "warnings": warnings}
     return {"mails": mails, "mail_count": len(mails), "warnings": []}
 
 
@@ -656,7 +708,8 @@ def find_keys(state: IfErrState) -> IfErrState:
 
     # 오류 판정과 키 추출은 judge_mails 한 곳에서 한다(키워드 또는 LLM).
     # 제목과 본문 양쪽에서 찾는다. 본문 표에 키가 있는 형식이 흔하다.
-    judged, judge_warnings = judge_mails(state.get("mails") or [])
+    judged, judge_warnings = judge_mails(state.get("mails") or [],
+                                         force_error=bool(state.get("subject")))
     for j in judged:
         if not j["is_error"]:
             continue
@@ -1052,9 +1105,13 @@ def _graph():
 
 
 def run_iferr(
-    hours: int | None = None, key: str = "", detail: Detail = "full"
+    hours: int | None = None, key: str = "", detail: Detail = "full", subject: str = ""
 ) -> dict[str, Any]:
     """진입점.
+
+    subject 를 주면 제목에 그 문구가 들어간 메일 한 통(가장 최근)만 본다. 기간을 안 주면
+    MAIL_SUBJECT_LOOKBACK_HOURS 만큼 거슬러 찾는다. key 를 같이 주면 그 메일의 키 중
+    그 키만 남긴다 — 메일을 건너뛰지 않는다(원인 컬럼은 메일에 있다).
 
         full    : 조회된 행까지 전부 (화면용, MCP 리소스로 나간다)
         summary : 키별 한 줄 (LLM 컨텍스트에 들어간다)
@@ -1062,11 +1119,21 @@ def run_iferr(
 
     full 을 챗봇 툴에서 돌려주면 조회 행이 매 턴 컨텍스트를 먹는다.
     """
+    subject = (subject or "").strip()
+    if subject and hours is None:
+        hours = MAIL_SUBJECT_LOOKBACK_HOURS
     state: IfErrState = _graph().invoke(
-        {"hours": hours, "only_key": key.strip()}
+        {"hours": hours, "only_key": "" if subject else key.strip(), "subject": subject}
     )
     cases = state.get("cases") or []
-    warnings = state.get("warnings") or []
+    warnings = list(state.get("warnings") or [])
+    if subject and key.strip() and cases:
+        mine = [c for c in cases if c["key"].upper() == key.strip().upper()]
+        if mine:
+            cases = mine
+        else:
+            warnings.append(f"지정한 메일에 키 {key.strip()} 이(가) 없어 메일의 키 전부를 보였다 "
+                            f"({', '.join(c['key'] for c in cases)})")
 
     if detail == "minimal":
         return {
@@ -1422,6 +1489,8 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="인터페이스 오류 메일 확인")
     ap.add_argument("--hours", type=int, default=None, help="몇 시간 전까지 볼지")
     ap.add_argument("--key", default="", help="메일을 읽지 않고 이 키만 확인")
+    ap.add_argument("--subject", default="", metavar="TEXT",
+                    help="제목에 이 문구가 들어간 메일 한 통(가장 최근)만 확인")
     ap.add_argument("--tables", default="", metavar="IFID",
                     help="이 IFID 가 참조하는 테이블(출발·도착)만 본다. 메일을 읽지 않는다")
     ap.add_argument("--ifs", default="", metavar="TABLE",
@@ -1658,7 +1727,7 @@ if __name__ == "__main__":
         raise SystemExit(0)
 
     # ---- 통합 실행 ---------------------------------------------------------
-    result = run_iferr(hours=args.hours, key=args.key, detail=args.detail)
+    result = run_iferr(hours=args.hours, key=args.key, detail=args.detail, subject=args.subject)
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
 
     # 규칙별 집계. 무엇이 어떤 근거로 판정됐는지 콘솔에도 남긴다.

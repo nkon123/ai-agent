@@ -15,6 +15,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import pytest
 
@@ -136,12 +137,12 @@ def test_check_interface_errors_tells_the_whole_story():
     async def call(c: Client) -> Any:
         tools = {t.name: t for t in (await c.list_tools()).tools}
         res = await c.call_tool("check_interface_errors", {"period": "3일"})
-        grid = await c.read_resource("iferr://impact/3%EC%9D%BC/-")
+        grid = await c.read_resource("iferr://impact/3%EC%9D%BC/-/-")
         return tools, res, grid
 
     tools, res, grid = _run(_with_client(call))
     meta = tools["check_interface_errors"].meta
-    assert meta["view"] == "grid" and meta["detail_uri"] == "iferr://impact/{period}/{key}"
+    assert meta["view"] == "grid" and meta["detail_uri"] == "iferr://impact/{period}/{key}/{subject}"
     text = res.content[0].text
     assert "최근 3일(72시간) 메일 2통에서 인터페이스 오류 2건" in text
     assert "마스터: 파일" in text
@@ -150,6 +151,81 @@ def test_check_interface_errors_tells_the_whole_story():
     data = json.loads(grid.contents[0].text)
     assert data["title"] == "인터페이스 오류 영향도 — 최근 3일"
     assert data["grid"]["rows"]
+
+
+NORMAL_MAIL = eml(
+    "주간 연계 처리 결과 보고", "Wed, 14 Oct 2026 06:00:00 -0000",
+    "이번 주 연계는 모두 정상 처리되었습니다. IF_ID : IF_ORD_SEND\n")
+OLD_SIZE_MAIL = eml(
+    "[연계오류] 주문 수신 인터페이스 처리 실패", "Mon, 12 Oct 2026 08:00:00 -0000",
+    "IF_ID : IF_ORD_RECV\n"
+    'ORA-12899: value too large for column "ERP"."IF_ORDER_TMP"."ORD_NO" (actual: 22, maximum: 20)\n')
+
+
+def test_subject_picks_one_mail_ignoring_spaces_and_case():
+    """'[연계오류]주문 수신' 처럼 띄어쓰기가 달라도 그 메일 한 통만 본다."""
+    r = incident.run_incident(subject="[연계오류]주문 수신")
+    assert r["mail_count"] == 1 and [c["key"] for c in r["cases"]] == ["IF_ORD_RECV"]
+    assert r["picked_mail"]["subject"] == "[연계오류] 주문 수신 인터페이스 처리 실패"
+    assert r["cases"][0]["impacts"][0]["column"] == "ORD_NO"
+
+
+def test_subject_looks_back_a_week_and_takes_the_latest(demo: Path):
+    """지정한 메일은 며칠 전 것일 수 있다. 같은 제목이 여럿이면 가장 최근 것을 보고 알린다."""
+    (demo / "03.eml").write_bytes(OLD_SIZE_MAIL)
+    r = incident.run_incident(subject="주문 수신 인터페이스")
+    assert r["label"] == "최근 7일" and r["hours"] == 168
+    assert r["mail_count"] == 1
+    assert "실제 25" in r["cases"][0]["impacts"][0]["issue_text"]
+    assert any("2통이라 가장 최근 1통" in w for w in r["warnings"])
+
+
+def test_subject_not_found_is_not_no_error():
+    r = incident.run_incident(subject="없는 제목")
+    assert r["cases"] == [] and r["picked_mail"] is None
+    assert any("찾지 못했다" in w and "확인 필요" in w for w in r["warnings"])
+
+
+def test_subject_mail_is_investigated_even_without_error_keyword(demo: Path):
+    """사람이 '이 메일 오류 확인해줘' 했으면 키워드가 없어도 조사하되, 그 사실을 남긴다."""
+    (demo / "03.eml").write_bytes(NORMAL_MAIL)
+    r = incident.run_incident(subject="주간 연계")
+    assert [c["key"] for c in r["cases"]] == ["IF_ORD_SEND"]
+    assert r["cases"][0]["judged_by"] == "user"
+    assert any("오류 메일이 아니었다" in w for w in r["warnings"])
+
+
+def test_subject_with_key_keeps_only_that_key(monkeypatch: Any):
+    calls: dict[str, Any] = {}
+    real = incident.run_iferr
+
+    def spy(**k: Any) -> Any:
+        calls.update(k)
+        return real(**k)
+
+    monkeypatch.setattr(incident, "run_iferr", spy)
+    r = incident.run_incident(subject="재고 수신", key="IF_STK_RECV")
+    assert calls["subject"] == "재고 수신" and [c["key"] for c in r["cases"]] == ["IF_STK_RECV"]
+
+
+def test_check_interface_errors_by_subject():
+    async def call(c: Client) -> Any:
+        res = await c.call_tool("check_interface_errors", {"subject": "[연계오류] 주문 수신"})
+        grid = await c.read_resource(
+            "iferr://impact/-/-/" + quote("[연계오류] 주문 수신", safe=""))
+        miss = await c.call_tool("check_interface_errors", {"subject": "없는 제목"})
+        return res, grid, miss
+
+    res, grid, miss = _run(_with_client(call))
+    text = res.content[0].text
+    assert text.startswith("메일 '[연계오류] 주문 수신 인터페이스 처리 실패' (2026-10-14 08:00)에서 "
+                           "인터페이스 오류 1건")
+    assert "원인: IF_ORDER_TMP.ORD_NO" in text
+    data = json.loads(grid.contents[0].text)
+    assert data["title"].startswith("인터페이스 오류 영향도 — 메일 '[연계오류] 주문 수신")
+    assert data["grid"]["rows"]
+    m = miss.content[0].text
+    assert m.startswith("제목에 '없는 제목' 이(가) 들어간 메일을 최근 7일(168시간) 안에서 찾지 못했다")
 
 
 def test_empty_model_reply_falls_back_to_tool_result():

@@ -61,12 +61,13 @@ _SAMPLE_KEY = sample_key(IFERR_KEY_PREFIXES)
     label="인터페이스 오류 확인 (iferr)",
     # 메일의 원인 컬럼까지 영향도를 이어서 조사하므로 결과 그리드가 있다.
     view="grid",
-    detail_uri="iferr://impact/{period}/{key}",
+    detail_uri="iferr://impact/{period}/{key}/{subject}",
     hint=(
         "check_interface_errors 는 연계/인터페이스 오류 메일을 확인할 때 쓴다. "
         "period 에는 사용자가 말한 기간을 그대로 넣어라 — '3일'이면 \"3일\", "
         "'오늘'이면 \"오늘\". 시간으로 바꿔 계산하지 마라. "
         "특정 키만 볼 때는 key 에 인터페이스 키를 넣어라. "
+        "사용자가 메일 제목을 말하면 subject 에 그 제목만 그대로 넣어라. "
         "이 툴은 메일에 적힌 원인 컬럼(길이 초과 등)의 영향도까지 한 번에 조사한다 — "
         "답에 원인 컬럼과 영향 있는 프로그램을 빠짐없이 전달하고, 전체 목록은 답 아래 "
         "[표로 보기] 에 있다고 알려라. "
@@ -77,13 +78,16 @@ _SAMPLE_KEY = sample_key(IFERR_KEY_PREFIXES)
     examples=(
         "오늘 인터페이스 오류 확인해줘",
         "최근 3일 연계 실패 확인해줘",
+        "\"[IF 오류] 주문 수신 처리 실패\" 메일 오류 확인해줘",
         f"{_SAMPLE_KEY} 이 인터페이스 뭐가 문제야?",
         "어제 실패한 인터페이스는 어디로 가는 거였어?",
     ),
     read_only=True,
     tier="combo",
 )
-async def check_interface_errors(period: str = "", key: str = "", ctx: Context = None) -> str:
+async def check_interface_errors(
+    period: str = "", key: str = "", subject: str = "", ctx: Context = None
+) -> str:
     """인터페이스 오류 메일을 읽고 키별로 테이블·원인 컬럼·영향도까지 확인한다.
 
     타 시스템 연계에서 오류가 났을 때 어떤 인터페이스가 실패했고, 메일에 적힌
@@ -92,23 +96,25 @@ async def check_interface_errors(period: str = "", key: str = "", ctx: Context =
     period 에는 사용자가 말한 기간을 그대로 넣는다("3일", "오늘", "12시간").
     시간 수로 바꿔 계산하지 말 것.
     key 는 특정 인터페이스 키만 확인할 때 넣는다.
+    subject 는 사용자가 특정 메일을 제목으로 가리킬 때 그 제목을 그대로 넣는다
+    ("[IF 오류] 주문 수신 처리 실패" 메일 → subject="[IF 오류] 주문 수신 처리 실패").
     """
     # 시간 계산을 모델에 맡기지 않는 이유: 소형 모델은 "3일"을 3으로 넣는다.
     # 실제로 그래서 3일치가 아니라 3시간치만 보고 '없다'고 답했다.
     # 메일 판정·컬럼 판정이 수십 초씩 걸려 진행을 중계한다(빈 화면은 멈춘 것과 구분이 안 된다).
-    r = await report_while(ctx, lambda: run_incident(period=period, key=key))
+    r = await report_while(ctx, lambda: run_incident(period=period, key=key, subject=subject))
     label, hours = r["label"], r["hours"]
+    pm = r["picked_mail"]
+    # 제목으로 집었으면 어느 메일을 봤는지부터 밝힌다 — 같은 제목이 여럿일 수 있다.
+    where = (f"메일 '{pm['subject']}' ({pm['received'][:16].replace('T', ' ')})" if pm
+             else f"{label}({hours}시간) 메일 {r['mail_count']}통")
 
-    if not r["cases"]:
-        head = (
-            f"{label}({hours}시간) 메일 {r['mail_count']}통에서 인터페이스 오류 키를 "
-            "찾지 못했다"
-        )
+    if r["subject"] and not r["mail_count"]:
+        head = f"제목에 '{r['subject']}' 이(가) 들어간 메일을 {label}({hours}시간) 안에서 찾지 못했다"
+    elif not r["cases"]:
+        head = f"{where}에서 인터페이스 오류 키를 찾지 못했다"
     else:
-        lines = [
-            f"{label}({hours}시간) 메일 {r['mail_count']}통에서 "
-            f"인터페이스 오류 {len(r['cases'])}건"
-        ]
+        lines = [f"{where}에서 인터페이스 오류 {len(r['cases'])}건"]
         n_imp = 0
         for c in r["cases"]:
             mark = {"found": "확인됨", "missing": "데이터 없음"}.get(c["status"], "확인 불가")
@@ -155,15 +161,15 @@ async def check_interface_errors(period: str = "", key: str = "", ctx: Context =
 
 
 @mcp.resource(
-    "iferr://impact/{period}/{key}",
+    "iferr://impact/{period}/{key}/{subject}",
     name="iferr_impact_grid",
     title="인터페이스 오류 영향도 그리드",
-    description="오류 케이스별 원인 컬럼의 영향도 줄 전부. period·key 가 '-' 면 기본값.",
+    description="오류 케이스별 원인 컬럼의 영향도 줄 전부. period·key·subject 가 '-' 면 기본값.",
     mime_type="application/json",
 )
-def iferr_impact_grid(period: str, key: str) -> str:
+def iferr_impact_grid(period: str, key: str, subject: str) -> str:
     """화면 그리드용. 방금 툴이 조사한 결과를 쓴다(없으면 새로 조사)."""
-    return json.dumps(incident_grid(period, key), ensure_ascii=False, default=str)
+    return json.dumps(incident_grid(period, key, subject), ensure_ascii=False, default=str)
 
 
 @mcp.resource(

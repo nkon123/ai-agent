@@ -3,6 +3,7 @@ chcp 65001 >nul
 rem 발표용 데모 — 가짜 메일·가짜 마스터·샘플 소스로 챗봇을 띄운다.
 rem config_local.py 는 건드리지 않는다. 설정은 이 창에서만 환경변수로 준다.
 rem 띄운 뒤 브라우저에서 "오늘 인터페이스 오류 확인해줘".
+rem 메일 한 통만: "[연계오류] 주문 수신 인터페이스 처리 실패" 메일 오류 확인해줘
 rem
 rem   samples\demo\run_demo.bat
 rem

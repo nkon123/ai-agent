@@ -192,6 +192,9 @@ MAIL_EML_DIR: str = _env_str("MAIL_EML_DIR", r"./samples/mail")
 # 요청 하나가 몇 분씩 걸린다.
 MAIL_LOOKBACK_HOURS: int = _env_int("MAIL_LOOKBACK_HOURS", 24)
 MAIL_MAX_COUNT: int = _env_int("MAIL_MAX_COUNT", 200)
+# 메일 제목을 지정해 확인할 때("[IF 오류] … 메일 확인해줘") 기간을 말하지 않으면 볼 시간.
+# 지정한 메일은 며칠 전 것인 일이 흔해 기본 기간(MAIL_LOOKBACK_HOURS)보다 길게 본다.
+MAIL_SUBJECT_LOOKBACK_HOURS: int = _env_int("MAIL_SUBJECT_LOOKBACK_HOURS", 168)
 
 # 오류 메일을 고르는 제목 키워드. 하나라도 걸리면 대상으로 본다.
 # 항목이 하나여도 쉼표를 붙일 것 — ("오류") 는 튜플이 아니라 문자열이다.

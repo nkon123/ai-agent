@@ -18,6 +18,7 @@
 단독 실행:
     python agents/incident/agent.py --period 오늘
     python agents/incident/agent.py --key IF_ORD_RECV
+    python agents/incident/agent.py --subject "[연계오류] 주문"
 """
 
 from __future__ import annotations
@@ -42,7 +43,11 @@ from agents.impact.column import (  # noqa: E402
     column_grid,
     run_column_impact,
 )
-from config import INCIDENT_MAX_IMPACTS, MAIL_LOOKBACK_HOURS  # noqa: E402
+from config import (  # noqa: E402
+    INCIDENT_MAX_IMPACTS,
+    MAIL_LOOKBACK_HOURS,
+    MAIL_SUBJECT_LOOKBACK_HOURS,
+)
 from core.cache import TTLCache  # noqa: E402
 from core.progress import notify  # noqa: E402
 from core.sqlstmt import bare_table_name  # noqa: E402
@@ -78,10 +83,17 @@ def targets_of(case: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
     return out, warnings
 
 
-def _investigate(period: str, key: str) -> dict[str, Any]:
-    hours, label, period_warn = parse_period(period, MAIL_LOOKBACK_HOURS)
-    notify(f"메일 확인 중 ({label})" if not key else f"{key} 조회 중")
-    r = run_iferr(hours=hours, key=key, detail="full")
+def _investigate(period: str, key: str, subject: str = "") -> dict[str, Any]:
+    # 메일을 제목으로 집었으면 그 메일은 며칠 전 것일 수 있다 — 기본 기간을 길게 본다.
+    hours, label, period_warn = parse_period(
+        period, MAIL_SUBJECT_LOOKBACK_HOURS if subject else MAIL_LOOKBACK_HOURS)
+    if subject and not period.strip() and hours % 24 == 0:
+        label = f"최근 {hours // 24}일"
+    if subject:
+        notify(f"'{subject[:30]}' 메일 찾는 중 ({label})")
+    else:
+        notify(f"메일 확인 중 ({label})" if not key else f"{key} 조회 중")
+    r = run_iferr(hours=hours, key=key, detail="full", subject=subject)
     warnings: list[str] = ([period_warn] if period_warn else []) + list(r.get("warnings") or [])
 
     cases: list[dict[str, Any]] = []
@@ -115,7 +127,11 @@ def _investigate(period: str, key: str) -> dict[str, Any]:
     if skipped:
         warnings.append(f"영향도 조사 상한({INCIDENT_MAX_IMPACTS}건)을 넘은 원인 컬럼 {skipped}건은 "
                         "조사하지 않았다 — 확인 필요 (INCIDENT_MAX_IMPACTS, 또는 컬럼 영향도를 따로 물을 것)")
-    return {"period": period, "key": key, "hours": hours, "label": label,
+    # 제목으로 집은 메일이 실제로 어느 것이었는지 — 답에 밝혀야 다른 메일을 본 걸 알아챈다.
+    picked = next((m for c in r["cases"] for m in (c.get("mails") or [])), None) if subject else None
+    return {"period": period, "key": key, "subject": subject, "hours": hours, "label": label,
+            "picked_mail": ({"subject": picked["subject"], "received": picked["received"]}
+                            if picked else None),
             "mail_count": r.get("mail_count", 0), "cases": cases,
             "comment": r.get("comment") or "", "warnings": warnings}
 
@@ -125,24 +141,31 @@ def _investigate(period: str, key: str) -> dict[str, Any]:
 _LAST = TTLCache(ttl=1800, maxsize=8)
 
 
-def _cache_key(period: str, key: str) -> tuple[str, str]:
-    return ((period or "").strip() or "-", (key or "").strip().upper() or "-")
+def _arg(v: str) -> str:
+    """리소스 URI 에서 '-' 는 '안 줌' 이다."""
+    v = (v or "").strip()
+    return "" if v == "-" else v
 
 
-def run_incident(period: str = "", key: str = "") -> dict[str, Any]:
-    """진입점. 항상 새로 조사한다(그리드용으로 결과를 남겨 둔다)."""
-    period = "" if (period or "").strip() == "-" else period
-    key = "" if (key or "").strip() == "-" else (key or "").strip()
-    r = _investigate(period, key)
-    _LAST.set(_cache_key(period, key), r)
+def _cache_key(period: str, key: str, subject: str) -> tuple[str, str, str]:
+    return (period or "-", key.upper() or "-", subject or "-")
+
+
+def run_incident(period: str = "", key: str = "", subject: str = "") -> dict[str, Any]:
+    """진입점. 항상 새로 조사한다(그리드용으로 결과를 남겨 둔다).
+
+    subject 를 주면 제목에 그 문구가 들어간 메일 한 통(가장 최근)만 조사한다.
+    """
+    period, key, subject = _arg(period), _arg(key), _arg(subject)
+    r = _investigate(period, key, subject)
+    _LAST.set(_cache_key(period, key, subject), r)
     return r
 
 
-def incident_grid(period: str = "", key: str = "") -> dict[str, Any]:
+def incident_grid(period: str = "", key: str = "", subject: str = "") -> dict[str, Any]:
     """조사 결과의 영향도를 한 표로. 방금 조사한 결과가 있으면 그것을 쓴다."""
-    period = "" if (period or "").strip() == "-" else period
-    key = "" if (key or "").strip() == "-" else (key or "").strip()
-    r = _LAST.get(_cache_key(period, key)) or run_incident(period, key)
+    period, key, subject = _arg(period), _arg(key), _arg(subject)
+    r = _LAST.get(_cache_key(period, key, subject)) or run_incident(period, key, subject)
     rows: list[dict[str, Any]] = []
     for c in r["cases"]:
         for imp in c["impacts"]:
@@ -153,7 +176,8 @@ def incident_grid(period: str = "", key: str = "") -> dict[str, Any]:
     impacts = [i for c in r["cases"] for i in c["impacts"]]
     counts = {k: sum(1 for row in rows if row["verdict"] == v) for k, v in VERDICT_LABEL.items()}
     return {
-        "title": f"인터페이스 오류 영향도 — {r['label']}",
+        "title": "인터페이스 오류 영향도 — "
+                 + (f"메일 '{r['picked_mail']['subject'][:40]}'" if r.get("picked_mail") else r["label"]),
         "subtitle": (f"메일 {r['mail_count']}통 · 오류 {len(r['cases'])}건 · 원인 컬럼 {len(impacts)}개 · "
                      f"찾은 줄 {len(rows)}개 (영향 있음 {counts['yes']} / 확인 필요 "
                      f"{counts['unknown']} / 영향 없음 {counts['no']})"),
@@ -172,9 +196,10 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="인터페이스 오류 → 원인 컬럼 → 영향도")
     ap.add_argument("--period", default="", help="'오늘', '3일' 처럼")
     ap.add_argument("--key", default="", help="메일을 읽지 않고 이 IFID 만")
+    ap.add_argument("--subject", default="", help="제목에 이 문구가 들어간 메일 한 통만")
     args = ap.parse_args()
 
-    res = run_incident(args.period, args.key)
+    res = run_incident(args.period, args.key, args.subject)
     print(f"{res['label']}({res['hours']}시간) 메일 {res['mail_count']}통, 오류 {len(res['cases'])}건")
     for c in res["cases"]:
         print(f"- {c['key']}: {c['status']} {' / '.join(c['flow_texts'])} (마스터: {c['master_source']})")
